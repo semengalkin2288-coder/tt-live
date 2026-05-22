@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>🏓 TT Live — Прогнозы настольный теннис</title>
+  <link rel="stylesheet" href="css/style.css?v=6.0" />
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <span class="logo">🏓 TT Live</span>
+      <div class="live-dot-wrap">
+        <span class="live-dot"></span>
+        <span id="status-text">Подключение...</span>
+      </div>
+    </div>
+    <div class="header-right">
+      <span id="data-source" class="data-source"></span>
+      <div class="bankroll-wrap">
+        <span class="bankroll-label">Банкролл:</span>
+        <input type="number" id="bankroll-input" value="1000" min="100" step="100" />
+        <span class="bankroll-currency">₽</span>
+      </div>
+      <span class="timer-wrap">Обновление через <span id="countdown">25</span>с</span>
+      <button class="btn-refresh" id="refresh-btn" onclick="App.refresh()">
+        <svg id="refresh-icon" width="13" height="13" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2.5">
+          <polyline points="23 4 23 10 17 10"></polyline>
+          <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+        </svg>
+        Обновить
+      </button>
+    </div>
+  </header>
+
+  <!-- Строка статистики -->
+  <div class="statsbar">
+    <div id="stats-bar" class="statsbar-inner">
+      <span class="stats-hint">Статистика появится после первых прогнозов</span>
+    </div>
+  </div>
+
+  <div class="subheader">
+    <div class="subheader-stats">
+      <span class="sh-item"><span id="count-live"  class="sh-val sh-red">0</span> лайв матчей</span>
+      <span class="sh-sep">·</span>
+      <span class="sh-item"><span id="count-value" class="sh-val sh-green">0</span> сигналов</span>
+      <span class="sh-sep">·</span>
+      <span class="sh-item">Обновлено: <span id="last-update" class="sh-val">—</span></span>
+    </div>
+    <div class="filter-wrap">
+      <button class="btn-best" onclick="App.showBestPrediction()">
+        🎯 Лучший прогноз
+      </button>
+      <label>Фильтр:</label>
+      <select id="filter-select" onchange="App.render()">
+        <option value="all">Все матчи</option>
+        <option value="value">Только VALUE</option>
+        <option value="inprogress">В игре</option>
+      </select>
+      <label>Сортировка:</label>
+      <select id="sort-select" onchange="App.render()">
+        <option value="confidence">Уверенность</option>
+        <option value="ev">EV%</option>
+        <option value="sets">Партии</option>
+      </select>
+    </div>
+  </div>
+
+  <!-- Баннер лучшего прогноза -->
+  <div id="best-banner" style="display:none"></div>
+
+  <main id="matches-grid" class="matches-grid">
+    <div class="loader-wrap" id="loader">
+      <div class="spinner"></div>
+      <p>Получаю лайв матчи с Леона...</p>
+    </div>
+  </main>
+
+  <script src="js/engine.js?v=6.0"></script>
+  <script src="js/api.js?v=6.0"></script>
+  <script src="js/app.js?v=6.0"></script>
+</body>
+</html>

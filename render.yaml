@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: tt-live
+    runtime: python
+    buildCommand: ""
+    startCommand: python server.py
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
