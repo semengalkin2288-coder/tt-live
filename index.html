@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>🏓 TT Live — Прогнозы настольный теннис</title>
-  <link rel="stylesheet" href="css/style.css?v=6.0" />
+  <title>Sports Live — Прогнозы в лайве</title>
+  <link rel="stylesheet" href="css/style.css?v=7.0" />
 </head>
 <body>
   <header>
     <div class="header-left">
-      <span class="logo">🏓 TT Live</span>
+      <span class="logo">⚡ Sports Live</span>
       <div class="live-dot-wrap">
         <span class="live-dot"></span>
         <span id="status-text">Подключение...</span>
@@ -34,7 +34,15 @@
     </div>
   </header>
 
-  <!-- Строка статистики -->
+  <!-- Sport tabs -->
+  <nav class="sport-tabs">
+    <button class="tab-btn active" data-sport="tt"       onclick="App.setSport('tt')">🏓 Н. Теннис</button>
+    <button class="tab-btn"        data-sport="football" onclick="App.setSport('football')">⚽ Футбол</button>
+    <button class="tab-btn"        data-sport="hockey"   onclick="App.setSport('hockey')">🏒 Хоккей</button>
+    <button class="tab-btn"        data-sport="tennis"   onclick="App.setSport('tennis')">🎾 Теннис</button>
+  </nav>
+
+  <!-- Stats bar -->
   <div class="statsbar">
     <div id="stats-bar" class="statsbar-inner">
       <span class="stats-hint">Статистика появится после первых прогнозов</span>
@@ -63,23 +71,24 @@
       <select id="sort-select" onchange="App.render()">
         <option value="confidence">Уверенность</option>
         <option value="ev">EV%</option>
-        <option value="sets">Партии</option>
+        <option value="sets">Счёт</option>
       </select>
     </div>
   </div>
 
-  <!-- Баннер лучшего прогноза -->
+  <!-- Best prediction banner -->
   <div id="best-banner" style="display:none"></div>
 
   <main id="matches-grid" class="matches-grid">
     <div class="loader-wrap" id="loader">
       <div class="spinner"></div>
-      <p>Получаю лайв матчи с Леона...</p>
+      <p>Загружаю лайв матчи с Леона...</p>
     </div>
   </main>
 
-  <script src="js/engine.js?v=6.0"></script>
-  <script src="js/api.js?v=6.0"></script>
-  <script src="js/app.js?v=6.0"></script>
+  <script src="js/engine.js?v=7.0"></script>
+  <script src="js/engine-sports.js?v=7.0"></script>
+  <script src="js/api.js?v=7.0"></script>
+  <script src="js/app.js?v=7.0"></script>
 </body>
 </html>

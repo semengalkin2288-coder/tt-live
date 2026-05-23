@@ -102,6 +102,37 @@ header {
 .btn-refresh.loading svg { animation: spin 0.7s linear infinite; }
 
 /* ====================================================== */
+/* SPORT TABS                                             */
+/* ====================================================== */
+
+.sport-tabs {
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  padding: 0 1rem;
+  display: flex;
+  gap: 0;
+  overflow-x: auto;
+}
+.tab-btn {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text2);
+  padding: 0.6rem 1.1rem;
+  font-size: 0.83rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.18s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active {
+  color: var(--text);
+  border-bottom-color: var(--blue);
+}
+
+/* ====================================================== */
 /* SUBHEADER                                              */
 /* ====================================================== */
 
@@ -229,6 +260,10 @@ header {
 .current-pts {
   margin-top: 0.3rem; font-size: 0.72rem; color: var(--text2);
   font-family: monospace;
+}
+.period-label {
+  font-size: 0.7rem; color: var(--yellow); font-weight: 700;
+  margin: 0.15rem 0 0.1rem; letter-spacing: 0.03em;
 }
 
 /* Momentum */

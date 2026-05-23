@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""
-TT Live Analyzer — Backend Server v3
-Источник: Leon.ru (котировки + счёт через betline API)
-Запуск: python server.py  или двойной клик start.bat
-"""
+"""Sports Live Analyzer — Backend v4 | Leon.ru | TT·Football·Hockey·Tennis"""
 
 import json, os, re as _re, ssl, time, threading, webbrowser
 import urllib.request, urllib.parse, urllib.error
@@ -11,10 +7,11 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 PORT      = int(os.environ.get('PORT', 8080))
-CACHE_TTL = 20  # секунд
+CACHE_TTL = 20
 
-_cache = {'events': [], 'ts': 0, 'source': ''}
-_lock  = threading.Lock()
+SPORTS  = ['tt', 'football', 'hockey', 'tennis']
+_caches = {s: {'events': [], 'ts': 0, 'source': ''} for s in SPORTS}
+_lock   = threading.Lock()
 
 SSL_CTX = ssl.create_default_context()
 SSL_CTX.check_hostname = False
@@ -29,6 +26,24 @@ LEON_HEADERS = {
     'Referer':         'https://leon.ru/',
 }
 
+SPORT_QUERIES = {
+    'tt':       ['Setka', 'Table+Tennis', 'TTL', 'Ping+Pong', 'WTT'],
+    'football': ['Champions+League', 'Europa+League', 'Premier+League',
+                 'La+Liga', 'Bundesliga', 'Serie+A', 'Ligue+1', 'РПЛ',
+                 'Conference+League', 'Eredivisie', 'MLS'],
+    'hockey':   ['КХЛ', 'NHL', 'SHL', 'Liiga', 'DEL', 'AHL'],
+    'tennis':   ['ATP', 'WTA', 'ITF'],
+}
+
+SPORT_FILTERS = {
+    'tt':       ['table', 'tennis', 'setka', 'ttl', 'ping', 'pong', 'настольный', 'wtt'],
+    'football': ['liga', 'league', 'bundesliga', 'serie', 'premier', 'ligue',
+                 'champions', 'europa', 'conference', 'eredivisie', 'рпл',
+                 'mls', 'allsvenskan', 'primeira', 'superliga', 'primera'],
+    'hockey':   ['hockey', 'хоккей', 'кхл', 'nhl', 'shl', 'liiga', 'del', 'ahl'],
+    'tennis':   ['atp', 'wta', 'itf', 'tennis', 'теннис', 'open', 'roland'],
+}
+
 
 def get_json(url, timeout=12):
     req = urllib.request.Request(url, headers=LEON_HEADERS)
@@ -36,44 +51,47 @@ def get_json(url, timeout=12):
         return json.loads(r.read().decode('utf-8'))
 
 
-# ================================================================
-# Leon: поиск событий НТ
-# ================================================================
-SEARCH_QUERIES = ['Setka', 'Table+Tennis', 'TTL', 'Ping+Pong', 'WTT']
+def _league_name(ev):
+    league = ev.get('league') or {}
+    if isinstance(league, dict):
+        return (league.get('nameDefault') or league.get('name') or '').lower()
+    return ''
 
-def fetch_leon_event_list():
-    """Собираем все НТ события через поиск (по нескольким запросам)"""
+
+def _sport_matches(ev, sport):
+    ln = _league_name(ev)
+    return any(kw in ln for kw in SPORT_FILTERS[sport])
+
+
+def fetch_sport_event_list(sport):
     all_events = {}
-    for q in SEARCH_QUERIES:
+    for q in SPORT_QUERIES[sport]:
         try:
             url = f'https://leon.ru/api-2/betline/search?ctag=ru-RU&q={q}'
             items = get_json(url)
             if isinstance(items, list):
                 for e in items:
-                    if e.get('id'):
+                    if e.get('id') and _sport_matches(e, sport):
                         all_events[e['id']] = e
         except Exception as ex:
-            print(f'[Leon search q={q}] {ex}')
+            print(f'[{sport} q={q}] {ex}')
     live = sum(1 for e in all_events.values() if e.get('matchPhase') == 'IN_PLAY')
     pre  = sum(1 for e in all_events.values() if e.get('matchPhase') == 'PRE_GAME')
-    print(f'[Leon] Всего событий: {len(all_events)}, лайв: {live}, предстоящих: {pre}')
+    print(f'[{sport}] total={len(all_events)} live={live} pre={pre}')
     return list(all_events.values())
 
 
 def fetch_leon_event_detail(event_id):
-    """Получаем полные данные события: рынки + котировки + счёт"""
     url = (f'https://leon.ru/api-2/betline/event/inplay'
            f'?ctag=ru-RU&eventId={event_id}&flags=urlv2,reg,mainmarkets')
     return get_json(url, timeout=10)
 
 
-# ================================================================
-# Парсинг
-# ================================================================
-def _parse_sets(set_scores_str):
-    """"11:8; 8:11; 6:7" → [{'home':11,'away':8}, ...]"""
+# ── Parsing helpers ──────────────────────────────────────────────────────────
+
+def _parse_sets(s):
     sets = []
-    for part in set_scores_str.split(';'):
+    for part in s.split(';'):
         part = part.strip()
         if ':' in part:
             h, a = part.split(':')
@@ -84,22 +102,38 @@ def _parse_sets(set_scores_str):
     return sets
 
 
-def _extract_odds(markets):
-    """Парсим котировки W1/W2, Тотал очков, Фора по сетам"""
+def _base_names(ev, base):
+    competitors = ev.get('competitors', base.get('competitors', []))
+    hc = next((c for c in competitors if c.get('homeAway') == 'HOME'), {})
+    ac = next((c for c in competitors if c.get('homeAway') == 'AWAY'), {})
+    nd = ev.get('nameDefault', base.get('nameDefault', ''))
+    if ' - ' in nd:
+        hn, an = nd.split(' - ', 1)
+    else:
+        hn = hc.get('nameDefault') or hc.get('name') or 'Команда 1'
+        an = ac.get('nameDefault') or ac.get('name') or 'Команда 2'
+    league = ev.get('league', base.get('league')) or {}
+    lg = (league.get('nameDefault') or league.get('name') or '') if isinstance(league, dict) else ''
+    url_path = base.get('url') or (ev.get('url') if ev else '') or ''
+    if url_path and not url_path.startswith('/'):
+        url_path = ''
+    leon_url = f'https://leon.ru{url_path}' if url_path else 'https://leon.ru/'
+    is_live = (ev.get('matchPhase') or base.get('matchPhase')) == 'IN_PLAY'
+    return hn.strip(), an.strip(), lg, leon_url, is_live
+
+
+# ── TT ───────────────────────────────────────────────────────────────────────
+
+def _odds_tt(markets):
     w1 = w2 = None
-    total_over = total_under = total_line = None
-    hdp_home = hdp_away = hdp_line = None
-    best_bal = 999.0  # для выбора самой сбалансированной линии тотала
-
+    tot_over = tot_under = tot_line = None
+    hdp_h = hdp_a = hdp_l = None
+    best_bal = 999.0
     for m in (markets or []):
-        if not m.get('open', True):
-            continue
+        if not m.get('open', True): continue
         runners = m.get('runners', [])
-        if len(runners) < 2:
-            continue
-        mname = m.get('name', '').lower()
-
-        # ── Победитель матча (W1/W2) ──────────────────────
+        if len(runners) < 2: continue
+        mn = m.get('name', '').lower()
         rnames = [r.get('name', '').strip() for r in runners]
         if not w1 and len(runners) == 2 and '1' in rnames and '2' in rnames:
             for r in runners:
@@ -107,195 +141,313 @@ def _extract_odds(markets):
                 if p and p > 1.0:
                     if n == '1': w1 = p
                     elif n == '2': w2 = p
-
-        # ── Тотал очков (total points over/under) ─────────
-        if 'тотал очков' in mname and len(runners) == 2:
-            over_r = under_r = None
+        if 'тотал очков' in mn and len(runners) == 2:
+            ov = un = None
             for r in runners:
                 n, p = r.get('name', ''), r.get('price')
                 nl = n.lower()
-                if 'больше' in nl and p: over_r = (p, n)
-                elif 'меньше' in nl and p: under_r = (p, n)
-            if over_r and under_r:
-                m_line = _re.search(r'[\d.]+', over_r[1])
-                if m_line:
-                    line = float(m_line.group())
-                    bal = abs(over_r[0] - 2.0) + abs(under_r[0] - 2.0)
-                    if bal < best_bal:  # выбираем линию с самыми ровными коэффициентами
-                        best_bal   = bal
-                        total_line = line
-                        total_over  = over_r[0]
-                        total_under = under_r[0]
-
-        # ── Фора по сетам (sets handicap) ─────────────────
-        if 'фора по сетам' in mname and len(runners) == 2 and not hdp_home:
+                if 'больше' in nl and p: ov = (p, n)
+                elif 'меньше' in nl and p: un = (p, n)
+            if ov and un:
+                ml = _re.search(r'[\d.]+', ov[1])
+                if ml:
+                    line = float(ml.group())
+                    bal = abs(ov[0] - 2.0) + abs(un[0] - 2.0)
+                    if bal < best_bal:
+                        best_bal = bal; tot_line = line; tot_over = ov[0]; tot_under = un[0]
+        if 'фора по сетам' in mn and len(runners) == 2 and not hdp_h:
             for r in runners:
                 n, p = r.get('name', '').strip(), r.get('price')
                 if not p or p <= 1.0: continue
                 hm = _re.search(r'([+-][\d.]+)', n)
-                line_val = float(hm.group(1)) if hm else None
-                if n.startswith('1'):
-                    hdp_home, hdp_line = p, line_val
-                elif n.startswith('2'):
-                    hdp_away = p
-
-    return w1, w2, total_over, total_under, total_line, hdp_home, hdp_away, hdp_line
+                lv = float(hm.group(1)) if hm else None
+                if n.startswith('1'): hdp_h, hdp_l = p, lv
+                elif n.startswith('2'): hdp_a = p
+    return w1, w2, tot_over, tot_under, tot_line, hdp_h, hdp_a, hdp_l
 
 
-def parse_leon_event(base_event, detail=None):
-    """Нормализуем событие Леона → внутренний формат"""
-    ev = detail if detail else base_event
-
-    competitors = ev.get('competitors', base_event.get('competitors', []))
-    home_comp = next((c for c in competitors if c.get('homeAway') == 'HOME'), {})
-    away_comp = next((c for c in competitors if c.get('homeAway') == 'AWAY'), {})
-
-    # Имена из nameDefault (латиница, чистая)
-    name_default = ev.get('nameDefault', base_event.get('nameDefault', ''))
-    if ' - ' in name_default:
-        home_name, away_name = name_default.split(' - ', 1)
-    else:
-        home_name = home_comp.get('nameDefault') or home_comp.get('name') or 'Игрок 1'
-        away_name = away_comp.get('nameDefault') or away_comp.get('name') or 'Игрок 2'
-
-    # Лига
-    league = ev.get('league', base_event.get('league')) or {}
-    if isinstance(league, dict):
-        league_name = league.get('nameDefault') or league.get('name') or 'Настольный теннис'
-    else:
-        league_name = 'Настольный теннис'
-
-    # Счёт из liveStatus
-    ls = ev.get('liveStatus') or base_event.get('liveStatus') or {}
-    home_sets = away_sets = 0
-    sets = []
-    clh = cla = 0
-    cur_set_num = 1
-
+def parse_tt(base, detail=None):
+    ev = detail if detail else base
+    hn, an, lg, url, is_live = _base_names(ev, base)
+    ls = ev.get('liveStatus') or base.get('liveStatus') or {}
+    hs = aws = 0; sets = []; clh = cla = 0; csn = 1
     if ls:
-        score_str = ls.get('score', '0:0').replace('*', '').strip()
-        if ':' in score_str:
-            try:
-                h, a = score_str.split(':')
-                home_sets, away_sets = int(h), int(a)
-            except ValueError:
-                pass
-
-        set_scores_str = ls.get('setScores', '')
-        sets = _parse_sets(set_scores_str)
-
-        # Номер текущей партии
-        phase = ls.get('detailedPhase', 'SET_1')
-        if 'SET_' in phase:
-            try:
-                cur_set_num = int(phase.replace('SET_', ''))
-            except ValueError:
-                cur_set_num = len(sets)
-
-        # Счёт в текущей партии = последняя запись в setScores
+        sc = ls.get('score', '0:0').replace('*', '').strip()
+        if ':' in sc:
+            try: h, a = sc.split(':'); hs, aws = int(h), int(a)
+            except ValueError: pass
+        sets = _parse_sets(ls.get('setScores', ''))
+        ph = ls.get('detailedPhase', 'SET_1')
+        if 'SET_' in ph:
+            try: csn = int(ph.replace('SET_', ''))
+            except: csn = len(sets)
         if sets:
             last = sets[-1]
-            is_done = (last['home'] >= 11 and last['home'] - last['away'] >= 2) or \
-                      (last['away'] >= 11 and last['away'] - last['home'] >= 2) or \
-                      (last['home'] >= 14 or last['away'] >= 14)
-            if not is_done:
-                clh, cla = last['home'], last['away']
-
-    # Котировки
-    markets = ev.get('markets', [])
-    w1, w2, total_over, total_under, total_line, hdp_home, hdp_away, hdp_line = _extract_odds(markets)
-
-    # URL на Леон — берём из base_event (поиск), там полный путь
-    url_path = base_event.get('url') or (ev.get('url') if ev else '') or ''
-    if url_path and not url_path.startswith('/'):
-        url_path = ''
-    leon_url = f'https://leon.ru{url_path}' if url_path else 'https://leon.ru/bets/table-tennis'
-
-    is_live = (ev.get('matchPhase') or base_event.get('matchPhase')) == 'IN_PLAY'
-
+            done = (last['home'] >= 11 and last['home'] - last['away'] >= 2) or \
+                   (last['away'] >= 11 and last['away'] - last['home'] >= 2) or \
+                   (last['home'] >= 14 or last['away'] >= 14)
+            if not done: clh, cla = last['home'], last['away']
+    mkts = ev.get('markets', [])
+    w1, w2, to, tu, tl, hh, ha, hl = _odds_tt(mkts)
     return {
-        'id':              str(ev.get('id', base_event.get('id', ''))),
-        'source':          'leon',
-        'homeTeam':        home_name.strip(),
-        'awayTeam':        away_name.strip(),
-        'homeRanking':     0,
-        'awayRanking':     0,
-        'tournament':      league_name,
-        'homeSets':        home_sets,
-        'awaySets':        away_sets,
-        'sets':            sets,
-        'currentSetNum':   cur_set_num,
-        'currentHomePts':  clh,
-        'currentAwayPts':  cla,
-        'w1Odds':          w1,
-        'w2Odds':          w2,
-        'totalOverOdds':   total_over,
-        'totalUnderOdds':  total_under,
-        'totalLine':       total_line,
-        'hdpHomeOdds':     hdp_home,
-        'hdpAwayOdds':     hdp_away,
-        'hdpLine':         hdp_line,
-        'leonUrl':         leon_url,
-        'isLive':          is_live,
-        'status':          'inprogress' if is_live else 'notstarted',
+        'id': str(ev.get('id', base.get('id', ''))), 'source': 'leon', 'sport': 'tt',
+        'homeTeam': hn, 'awayTeam': an, 'tournament': lg or 'Настольный теннис',
+        'homeSets': hs, 'awaySets': aws, 'sets': sets,
+        'currentSetNum': csn, 'currentHomePts': clh, 'currentAwayPts': cla,
+        'homeScore': hs, 'awayScore': aws, 'period': csn, 'periodLabel': f'Партия {csn}',
+        'w1Odds': w1, 'w2Odds': w2, 'wxOdds': None,
+        'totalOverOdds': to, 'totalUnderOdds': tu, 'totalLine': tl,
+        'hdpHomeOdds': hh, 'hdpAwayOdds': ha, 'hdpLine': hl,
+        'leonUrl': url, 'isLive': is_live, 'status': 'inprogress' if is_live else 'notstarted',
     }
 
 
-# ================================================================
-# Главная функция
-# ================================================================
-def get_all_live():
-    global _cache
+# ── Football / Hockey ────────────────────────────────────────────────────────
+
+def _odds_football(markets):
+    w1 = wx = w2 = None
+    tot_over = tot_under = tot_line = None
+    hdp_h = hdp_a = hdp_l = None
+    best_bal = 999.0
+    for m in (markets or []):
+        if not m.get('open', True): continue
+        runners = m.get('runners', [])
+        if len(runners) < 2: continue
+        mn = m.get('name', '').lower()
+        rn_low = [r.get('name', '').strip().lower() for r in runners]
+        rn_orig = [r.get('name', '').strip() for r in runners]
+
+        # 3-way
+        if not w1 and len(runners) == 3:
+            has1 = '1' in rn_orig; has2 = '2' in rn_orig
+            hasX = any(n in ('x', 'ничья', 'draw') for n in rn_low)
+            if has1 and has2 and hasX:
+                for r in runners:
+                    n = r.get('name', '').strip(); nl = n.lower(); p = r.get('price')
+                    if not p or p <= 1.0: continue
+                    if n == '1': w1 = p
+                    elif n == '2': w2 = p
+                    elif nl in ('x', 'ничья', 'draw'): wx = p
+
+        # 2-way
+        if not w1 and len(runners) == 2 and '1' in rn_orig and '2' in rn_orig:
+            for r in runners:
+                n, p = r.get('name', '').strip(), r.get('price')
+                if p and p > 1.0:
+                    if n == '1': w1 = p
+                    elif n == '2': w2 = p
+
+        # Total
+        if ('тотал' in mn or 'total' in mn) and len(runners) == 2:
+            if any(x in mn for x in ('сет', 'партия', 'гейм', 'сет')): continue
+            ov = un = None
+            for r in runners:
+                n, p = r.get('name', ''), r.get('price'); nl = n.lower()
+                if ('больше' in nl or 'over' in nl) and p: ov = (p, n)
+                elif ('меньше' in nl or 'under' in nl) and p: un = (p, n)
+            if ov and un:
+                ml = _re.search(r'[\d.]+', ov[1])
+                if ml:
+                    line = float(ml.group())
+                    bal = abs(ov[0] - 2.0) + abs(un[0] - 2.0)
+                    if bal < best_bal:
+                        best_bal = bal; tot_line = line; tot_over = ov[0]; tot_under = un[0]
+
+        # Handicap
+        if ('фора' in mn or 'гандикап' in mn) and len(runners) == 2 and not hdp_h:
+            if any(x in mn for x in ('сет', 'партия')): continue
+            for r in runners:
+                n, p = r.get('name', '').strip(), r.get('price')
+                if not p or p <= 1.0: continue
+                hm = _re.search(r'([+-][\d.]+)', n)
+                lv = float(hm.group(1)) if hm else None
+                if n.startswith('1'): hdp_h, hdp_l = p, lv
+                elif n.startswith('2'): hdp_a = p
+    return w1, wx, w2, tot_over, tot_under, tot_line, hdp_h, hdp_a, hdp_l
+
+
+def _parse_phase(phase, sport):
+    ph = (phase or '').upper()
+    if sport == 'football':
+        if any(x in ph for x in ('FIRST', '1ST', 'HALF_1')): return 1, '1-й тайм'
+        if any(x in ph for x in ('SECOND', '2ND', 'HALF_2')): return 2, '2-й тайм'
+        if 'EXTRA' in ph or 'OVER' in ph: return 3, 'Доп. время'
+        if 'PENALTY' in ph: return 4, 'Пенальти'
+        return 1, '1-й тайм'
+    else:  # hockey
+        if any(x in ph for x in ('FIRST', 'PERIOD_1', '1ST')): return 1, '1-й период'
+        if any(x in ph for x in ('SECOND', 'PERIOD_2', '2ND')): return 2, '2-й период'
+        if any(x in ph for x in ('THIRD', 'PERIOD_3', '3RD')): return 3, '3-й период'
+        if 'OT' in ph or 'OVER' in ph: return 4, 'ОТ'
+        if any(x in ph for x in ('SHOOT', 'PENALTY')): return 5, 'Буллиты'
+        return 1, '1-й период'
+
+
+def parse_football(base, detail=None, sport='football'):
+    ev = detail if detail else base
+    hn, an, lg, url, is_live = _base_names(ev, base)
+    ls = ev.get('liveStatus') or base.get('liveStatus') or {}
+    hs = aws = 0; period = 1; plabel = ''; minute = 0
+    if ls:
+        sc = ls.get('score', '0:0').replace('*', '').strip()
+        if ':' in sc:
+            try: h, a = sc.split(':'); hs, aws = int(h), int(a)
+            except ValueError: pass
+        period, plabel = _parse_phase(ls.get('detailedPhase', ''), sport)
+        mt = ls.get('matchTime') or ls.get('minute') or ls.get('timer') or 0
+        if isinstance(mt, str):
+            try: minute = int(mt.strip("+' "))
+            except: minute = 0
+        else:
+            minute = int(mt) if mt else 0
+    mkts = ev.get('markets', [])
+    w1, wx, w2, to, tu, tl, hh, ha, hl = _odds_football(mkts)
+    lbl = {'football': 'Футбол', 'hockey': 'Хоккей'}.get(sport, sport)
+    return {
+        'id': str(ev.get('id', base.get('id', ''))), 'source': 'leon', 'sport': sport,
+        'homeTeam': hn, 'awayTeam': an, 'tournament': lg or lbl,
+        'homeScore': hs, 'awayScore': aws,
+        'homeSets': hs, 'awaySets': aws,
+        'sets': [], 'currentSetNum': period, 'currentHomePts': 0, 'currentAwayPts': 0,
+        'period': period, 'periodLabel': plabel, 'minute': minute,
+        'w1Odds': w1, 'wxOdds': wx, 'w2Odds': w2,
+        'totalOverOdds': to, 'totalUnderOdds': tu, 'totalLine': tl,
+        'hdpHomeOdds': hh, 'hdpAwayOdds': ha, 'hdpLine': hl,
+        'leonUrl': url, 'isLive': is_live, 'status': 'inprogress' if is_live else 'notstarted',
+    }
+
+
+# ── Tennis ───────────────────────────────────────────────────────────────────
+
+def _odds_tennis(markets):
+    w1 = w2 = None
+    tot_over = tot_under = tot_line = None
+    hdp_h = hdp_a = hdp_l = None
+    best_bal = 999.0
+    for m in (markets or []):
+        if not m.get('open', True): continue
+        runners = m.get('runners', [])
+        if len(runners) < 2: continue
+        mn = m.get('name', '').lower()
+        rn = [r.get('name', '').strip() for r in runners]
+        if not w1 and len(runners) == 2 and '1' in rn and '2' in rn:
+            for r in runners:
+                n, p = r.get('name', '').strip(), r.get('price')
+                if p and p > 1.0:
+                    if n == '1': w1 = p
+                    elif n == '2': w2 = p
+        if ('тотал' in mn or 'гейм' in mn) and len(runners) == 2:
+            if 'сет' in mn: continue
+            ov = un = None
+            for r in runners:
+                n, p = r.get('name', ''), r.get('price'); nl = n.lower()
+                if 'больше' in nl and p: ov = (p, n)
+                elif 'меньше' in nl and p: un = (p, n)
+            if ov and un:
+                ml = _re.search(r'[\d.]+', ov[1])
+                if ml:
+                    line = float(ml.group())
+                    bal = abs(ov[0] - 2.0) + abs(un[0] - 2.0)
+                    if bal < best_bal:
+                        best_bal = bal; tot_line = line; tot_over = ov[0]; tot_under = un[0]
+        if 'фора по сетам' in mn and len(runners) == 2 and not hdp_h:
+            for r in runners:
+                n, p = r.get('name', '').strip(), r.get('price')
+                if not p or p <= 1.0: continue
+                hm = _re.search(r'([+-][\d.]+)', n)
+                lv = float(hm.group(1)) if hm else None
+                if n.startswith('1'): hdp_h, hdp_l = p, lv
+                elif n.startswith('2'): hdp_a = p
+    return w1, w2, tot_over, tot_under, tot_line, hdp_h, hdp_a, hdp_l
+
+
+def parse_tennis(base, detail=None):
+    ev = detail if detail else base
+    hn, an, lg, url, is_live = _base_names(ev, base)
+    ls = ev.get('liveStatus') or base.get('liveStatus') or {}
+    hs = aws = 0; sets = []; clh = cla = 0; csn = 1
+    if ls:
+        sc = ls.get('score', '0:0').replace('*', '').strip()
+        if ':' in sc:
+            try: h, a = sc.split(':'); hs, aws = int(h), int(a)
+            except ValueError: pass
+        sets = _parse_sets(ls.get('setScores', ''))
+        ph = ls.get('detailedPhase', 'SET_1')
+        if 'SET_' in ph:
+            try: csn = int(ph.replace('SET_', ''))
+            except: csn = max(1, len(sets))
+        if sets:
+            last = sets[-1]
+            done = (last['home'] >= 6 and last['home'] - last['away'] >= 2) or \
+                   (last['away'] >= 6 and last['away'] - last['home'] >= 2) or \
+                   (last['home'] >= 7 or last['away'] >= 7)
+            if not done: clh, cla = last['home'], last['away']
+    mkts = ev.get('markets', [])
+    w1, w2, to, tu, tl, hh, ha, hl = _odds_tennis(mkts)
+    return {
+        'id': str(ev.get('id', base.get('id', ''))), 'source': 'leon', 'sport': 'tennis',
+        'homeTeam': hn, 'awayTeam': an, 'tournament': lg or 'Теннис',
+        'homeSets': hs, 'awaySets': aws, 'sets': sets,
+        'currentSetNum': csn, 'currentHomePts': clh, 'currentAwayPts': cla,
+        'homeScore': hs, 'awayScore': aws, 'period': csn, 'periodLabel': f'Сет {csn}',
+        'setsToWin': 2,
+        'w1Odds': w1, 'w2Odds': w2, 'wxOdds': None,
+        'totalOverOdds': to, 'totalUnderOdds': tu, 'totalLine': tl,
+        'hdpHomeOdds': hh, 'hdpAwayOdds': ha, 'hdpLine': hl,
+        'leonUrl': url, 'isLive': is_live, 'status': 'inprogress' if is_live else 'notstarted',
+    }
+
+
+# ── Main fetch ───────────────────────────────────────────────────────────────
+
+PARSERS = {
+    'tt':       lambda e, d: parse_tt(e, d),
+    'football': lambda e, d: parse_football(e, d, 'football'),
+    'hockey':   lambda e, d: parse_football(e, d, 'hockey'),
+    'tennis':   lambda e, d: parse_tennis(e, d),
+}
+
+
+def get_sport_data(sport):
     now = time.time()
     with _lock:
-        if _cache['events'] and now - _cache['ts'] < CACHE_TTL:
-            return _cache
+        c = _caches[sport]
+        if c['events'] and now - c['ts'] < CACHE_TTL:
+            return c
 
-    events_list = fetch_leon_event_list()
+    evs = fetch_sport_event_list(sport)
+    live_evs = [e for e in evs if e.get('matchPhase') == 'IN_PLAY']
+    pre_evs  = [e for e in evs if e.get('matchPhase') == 'PRE_GAME']
 
-    live_events = [e for e in events_list if e.get('matchPhase') == 'IN_PLAY']
-    pre_events  = [e for e in events_list if e.get('matchPhase') == 'PRE_GAME']
-
-    # Параллельно забираем детали (рынки + котировки) для лайв событий
     details = {}
-    if live_events:
+    if live_evs:
         with ThreadPoolExecutor(max_workers=6) as exe:
-            futures = {exe.submit(fetch_leon_event_detail, e['id']): e['id']
-                       for e in live_events}
-            for f in as_completed(futures, timeout=20):
-                eid = futures[f]
-                try:
-                    details[eid] = f.result()
-                except Exception as ex:
-                    print(f'[Leon detail {eid}] {ex}')
+            futs = {exe.submit(fetch_leon_event_detail, e['id']): e['id'] for e in live_evs}
+            for f in as_completed(futs, timeout=20):
+                eid = futs[f]
+                try: details[eid] = f.result()
+                except Exception as ex: print(f'[{sport} detail {eid}] {ex}')
 
+    parse = PARSERS[sport]
     result = []
-    # Лайв первыми
-    for e in live_events:
-        detail = details.get(e['id'])
-        result.append(parse_leon_event(e, detail))
-    # Затем предстоящие
-    for e in pre_events[:10]:
-        result.append(parse_leon_event(e))
+    for e in live_evs:
+        result.append(parse(e, details.get(e['id'])))
+    for e in pre_evs[:10]:
+        result.append(parse(e, None))
 
-    live_with_odds = sum(1 for r in result if r['isLive'] and r['w1Odds'])
-    source_label = f"Leon ({len(live_events)} лайв, {len(pre_events)} upcoming)"
-    if live_with_odds:
-        source_label += f" · {live_with_odds} с котировками"
+    live_odds = sum(1 for r in result if r['isLive'] and r['w1Odds'])
+    label = f"Leon ({len(live_evs)} лайв, {len(pre_evs)} upcoming)"
+    if live_odds:
+        label += f" · {live_odds} с котировками"
 
+    new_cache = {'events': result, 'ts': now, 'source': label, 'errors': []}
     with _lock:
-        _cache = {
-            'events': result,
-            'ts':     now,
-            'source': source_label,
-            'errors': [],
-        }
-    return _cache
+        _caches[sport] = new_cache
+    return new_cache
 
 
-# ================================================================
-# HTTP-сервер
-# ================================================================
+# ── HTTP server ───────────────────────────────────────────────────────────────
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -316,27 +468,26 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _api(self):
         try:
-            res  = get_all_live()
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            sport = qs.get('sport', ['tt'])[0]
+            if sport not in SPORTS:
+                sport = 'tt'
+            res  = get_sport_data(sport)
             body = json.dumps({
-                'events': res['events'],
-                'source': res['source'],
-                'count':  len(res['events']),
-                'ts':     int(time.time()),
+                'events': res['events'], 'source': res['source'],
+                'count': len(res['events']), 'sport': sport, 'ts': int(time.time()),
             }, ensure_ascii=False).encode('utf-8')
-
             self.send_response(200)
-            self.send_header('Content-Type',  'application/json; charset=utf-8')
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
             self.send_header('Content-Length', str(len(body)))
             self.send_header('Access-Control-Allow-Origin', '*')
-            self.send_header('Cache-Control',  'no-cache')
+            self.send_header('Cache-Control', 'no-cache')
             self.end_headers()
             self.wfile.write(body)
-
         except Exception as ex:
-            body = json.dumps({'error': str(ex), 'events': []},
-                              ensure_ascii=False).encode()
+            body = json.dumps({'error': str(ex), 'events': []}, ensure_ascii=False).encode()
             self.send_response(500)
-            self.send_header('Content-Type',  'application/json')
+            self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(body)))
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
@@ -351,22 +502,18 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main():
-    host = '0.0.0.0'  # слушаем все интерфейсы (обязательно для облака)
-    print('=' * 50)
-    print('  TT Live Analyzer v3')
+    host = '0.0.0.0'
+    print('=' * 52)
+    print('  Sports Live Analyzer v4')
     print(f'  Port: {PORT}')
-    print('  Источник: Leon.ru')
-    print('=' * 50)
-
+    print('  Спорт: TT · Футбол · Хоккей · Теннис')
+    print('=' * 52)
     server = HTTPServer((host, PORT), Handler)
-
-    # Открываем браузер только при локальном запуске
     if PORT == 8080 and os.environ.get('RENDER') is None:
-        def open_browser():
+        def _open():
             time.sleep(1.2)
             webbrowser.open(f'http://localhost:{PORT}')
-        threading.Thread(target=open_browser, daemon=True).start()
-
+        threading.Thread(target=_open, daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
