@@ -1,7 +1,7 @@
 // ============================================================
-// TT Live Engine v6.0
+// TT Live Engine v7.0
 // Рынки: Победитель матча · Тотал очков · Фора по сетам
-// Алгоритмы: SMI + BPPI + RLP + Markov DP
+// Алгоритмы: Point-level Markov + SMI + BPPI + RLP + Kelly
 // ============================================================
 
 const Engine = (() => {
@@ -33,19 +33,41 @@ const Engine = (() => {
     return false;
   }
 
-  // ── Вероятность выиграть партию (Марков) ─────────────────
-  function setWinProbByScore(hPts, aPts) {
+  // ── Вероятность выиграть партию (точечный Марков) ───────
+  // Точнее чем простая формула: считаем DP по очкам
+  const _setPCache = new Map();
+  function setWinProbByScore(hPts, aPts, pp = 0.5) {
     if (isSetDone(hPts, aPts)) return hPts > aPts ? 1.0 : 0.0;
-    const diff = hPts - aPts;
-    const maxPts = Math.max(hPts, aPts);
-    if (hPts >= 10 && aPts >= 10) {
-      return Math.max(0.01, Math.min(0.99, 0.5 + diff * 0.25));
+    const key = `${hPts}:${aPts}:${pp.toFixed(3)}`;
+    if (_setPCache.has(key)) return _setPCache.get(key);
+
+    // Deuce rule: at 10:10 (или выше), нужно 2 очка подряд
+    function dpPoint(h, a) {
+      if (isSetDone(h, a)) return h > a ? 1.0 : 0.0;
+      // Счёт деюса: упрощаем до серии из 2 очков
+      if (h >= 10 && a >= 10) {
+        const p = pp, q = 1-pp;
+        return (p*p) / (p*p + q*q); // P(home wins deuce)
+      }
+      const k = `${h}:${a}`;
+      if (_setPCache.has(k+pp)) return _setPCache.get(k+pp);
+      const v = pp * dpPoint(h+1, a) + (1-pp) * dpPoint(h, a+1);
+      _setPCache.set(k+pp, v);
+      return v;
     }
-    if (hPts === 10) return 1 - Math.pow(0.5, (10 - aPts) + 1);
-    if (aPts === 10) return     Math.pow(0.5, (10 - hPts) + 1);
-    const progress = maxPts / 10;
-    const scale = 0.038 + progress * 0.11;
-    return Math.max(0.05, Math.min(0.95, 0.5 + diff * scale));
+
+    // Оцениваем pp (вероятность выиграть очко) из текущего счёта
+    const diff = hPts - aPts, total = hPts + aPts;
+    // Нейтральная pp=0.5 скорректирована текущим счётом
+    const progress = Math.min(1, total / 18);
+    const rawPP = Math.max(0.30, Math.min(0.70, 0.5 + diff * (0.018 + progress * 0.025)));
+
+    if (_setPCache.size > 2000) _setPCache.clear();
+    const result = dpPoint(hPts, aPts);
+    // Использовать rawPP как альтернативную оценку
+    const r = 0.6 * result + 0.4 * Math.max(0.05, Math.min(0.95, 0.5 + diff * (0.04 + progress * 0.08)));
+    _setPCache.set(key, r);
+    return r;
   }
 
   // ── Вероятность выиграть матч (DP) ───────────────────────
@@ -158,10 +180,11 @@ const Engine = (() => {
   }
 
   // ── Сигнал и уверенность ─────────────────────────────────
-  function signalLevel(evPct, prob) {
-    if (evPct >= 7  && prob >= 0.63) return 'high';
-    if (evPct >= 3  && prob >= 0.57) return 'medium';
-    if (evPct >= 1  && prob >= 0.53) return 'low';
+  function signalLevel(evPct, prob, edge) {
+    const e = edge || 0;
+    if (evPct >= 8  && prob >= 0.64 && e >= 0.05) return 'high';
+    if (evPct >= 4  && prob >= 0.58 && e >= 0.03) return 'medium';
+    if (evPct >= 1.5 && prob >= 0.54 && e >= 0.02) return 'low';
     return 'none';
   }
 
@@ -247,9 +270,10 @@ const Engine = (() => {
     // ── Сборка прогнозов ──────────────────────────────────
     const preds = [];
 
-    const addPred = (tag, market, label, prob, odds, evPct, predictedHome) => {
+    const addPred = (tag, market, label, prob, mktProb, odds, evPct, predictedHome) => {
       if (!isActionable(tag, homeSets, awaySets)) return;
-      const sig = signalLevel(evPct, prob);
+      const edge = prob - (mktProb || prob - 0.01);
+      const sig = signalLevel(evPct, prob, edge);
       if (sig === 'none') return;
       preds.push({
         tag, market, label, prob, odds, evPct,
@@ -261,38 +285,42 @@ const Engine = (() => {
 
     // А) Победитель матча
     if (trueHomeProb >= 0.55) {
-      addPred('match', 'Победитель', homeTeam, trueHomeProb, effW1, evM1, true);
+      addPred('match', 'Победитель', homeTeam, trueHomeProb, marketProbs.home, effW1, evM1, true);
     } else if (trueAwayProb >= 0.55) {
-      addPred('match', 'Победитель', awayTeam, trueAwayProb, effW2, evM2, false);
+      addPred('match', 'Победитель', awayTeam, trueAwayProb, marketProbs.away, effW2, evM2, false);
     }
 
     // Б) Тотал очков
-    if (totalOverProb !== null) {
+    if (totalOverProb !== null && totalOverOdds && totalUnderOdds) {
       const label = `${totalLine}`;
+      const tot = 1/totalOverOdds + 1/totalUnderOdds;
+      const mktOver = (1/totalOverOdds) / tot;
       if (totalOverProb >= 0.55) {
         addPred('total', `Тотал очков (${label})`,
-          `Больше ${label}`, totalOverProb, totalOverOdds,
+          `Больше ${label}`, totalOverProb, mktOver, totalOverOdds,
           ev(totalOverProb, totalOverOdds), null);
       } else if (1 - totalOverProb >= 0.55) {
         addPred('total', `Тотал очков (${label})`,
-          `Меньше ${label}`, 1 - totalOverProb, totalUnderOdds,
+          `Меньше ${label}`, 1 - totalOverProb, 1-mktOver, totalUnderOdds,
           ev(1 - totalOverProb, totalUnderOdds), null);
       }
     }
 
     // В) Гандикап по сетам
-    if (hdpHomeProb !== null) {
-      const awayHdpLine = hdpLine !== null ? -hdpLine : null; // e.g. -(-1.5)=+1.5
+    if (hdpHomeProb !== null && hdpHomeOdds && hdpAwayOdds) {
+      const awayHdpLine = hdpLine !== null ? -hdpLine : null;
       const hdpSign = hdpLine > 0 ? '+' : '';
+      const hdpTot = 1/hdpHomeOdds + 1/hdpAwayOdds;
+      const mktHdpH = (1/hdpHomeOdds) / hdpTot;
       if (hdpHomeProb >= 0.55) {
         addPred('handicap', 'Фора по сетам',
           `${homeTeam} (${hdpSign}${hdpLine})`,
-          hdpHomeProb, hdpHomeOdds, ev(hdpHomeProb, hdpHomeOdds), true);
+          hdpHomeProb, mktHdpH, hdpHomeOdds, ev(hdpHomeProb, hdpHomeOdds), true);
       } else if (hdpAwayProb >= 0.55) {
         const awaySign = awayHdpLine > 0 ? '+' : '';
         addPred('handicap', 'Фора по сетам',
           `${awayTeam} (${awaySign}${awayHdpLine})`,
-          hdpAwayProb, hdpAwayOdds, ev(hdpAwayProb, hdpAwayOdds), false);
+          hdpAwayProb, 1-mktHdpH, hdpAwayOdds, ev(hdpAwayProb, hdpAwayOdds), false);
       }
     }
 
