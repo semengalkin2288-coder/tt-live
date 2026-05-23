@@ -26,23 +26,36 @@ LEON_HEADERS = {
     'Referer':         'https://leon.ru/',
 }
 
+# Russian names are the primary key — Leon indexes categories in Russian
 SPORT_QUERIES = {
-    'tt':       ['Setka', 'Table+Tennis', 'TTL', 'Ping+Pong', 'WTT'],
-    'football': ['Champions+League', 'Europa+League', 'Premier+League',
-                 'La+Liga', 'Bundesliga', 'Serie+A', 'Ligue+1', 'РПЛ',
-                 'Conference+League', 'Eredivisie', 'MLS'],
-    'hockey':   ['КХЛ', 'NHL', 'SHL', 'Liiga', 'DEL', 'AHL'],
-    'tennis':   ['ATP', 'WTA', 'ITF'],
+    'tt': [
+        'Настольный+теннис', 'Table+Tennis', 'Setka', 'TTL', 'Ping+Pong', 'WTT',
+    ],
+    'football': [
+        'Футбол',  # primary: catches all Leon football categories at once
+        'Champions+League', 'Europa+League', 'Conference+League',
+        'Premier+League', 'La+Liga', 'Bundesliga', 'Serie+A', 'Ligue+1',
+        'Eredivisie', 'Primeira+Liga', 'Allsvenskan', 'Jupiler',
+        'РПЛ', 'MLS', 'Liga+MX', 'Brasileirao', 'J1+League', 'K+League',
+        'Nations+League', 'World+Cup', 'Copa+America', 'Кубок',
+    ],
+    'hockey': [
+        'Хоккей',  # primary
+        'КХЛ', 'NHL', 'SHL', 'Liiga', 'DEL', 'AHL', 'NLA',
+    ],
+    'tennis': [
+        'Теннис',  # primary (big tennis; table tennis is "настольный теннис")
+        'ATP', 'WTA', 'ITF', 'Roland+Garros', 'Wimbledon',
+    ],
 }
 
-SPORT_FILTERS = {
-    'tt':       ['table', 'tennis', 'setka', 'ttl', 'ping', 'pong', 'настольный', 'wtt'],
-    'football': ['liga', 'league', 'bundesliga', 'serie', 'premier', 'ligue',
-                 'champions', 'europa', 'conference', 'eredivisie', 'рпл',
-                 'mls', 'allsvenskan', 'primeira', 'superliga', 'primera'],
-    'hockey':   ['hockey', 'хоккей', 'кхл', 'nhl', 'shl', 'liiga', 'del', 'ahl'],
-    'tennis':   ['atp', 'wta', 'itf', 'tennis', 'теннис', 'open', 'roland'],
-}
+# Definitive sport signals by league name
+_TT_KW     = ['настольный', 'table tennis', 'table-tennis', 'setka', 'ttl',
+               'ping-pong', 'ping pong', 'wtt']
+_HOCKEY_KW = ['хоккей', 'hockey', 'кхл', 'nhl ', 'shl', 'liiga', 'del ',
+              'ahl', 'нхл', 'ice hl', 'nla']
+_BIGTEN_KW = ['atp', 'wta', 'itf', 'roland garros', 'wimbledon', 'us open',
+              'australian open', 'challenger', 'davis cup', 'fed cup', 'billie jean']
 
 
 def get_json(url, timeout=12):
@@ -58,9 +71,21 @@ def _league_name(ev):
     return ''
 
 
-def _sport_matches(ev, sport):
+def _classify(ev):
+    """Return sport key or None if ambiguous."""
     ln = _league_name(ev)
-    return any(kw in ln for kw in SPORT_FILTERS[sport])
+    if any(kw in ln for kw in _TT_KW):
+        return 'tt'
+    if any(kw in ln for kw in _HOCKEY_KW):
+        return 'hockey'
+    if any(kw in ln for kw in _BIGTEN_KW):
+        return 'tennis'
+    # 'теннис' without 'настольный' = big tennis
+    if 'теннис' in ln and 'настольный' not in ln:
+        return 'tennis'
+    if 'tennis' in ln and 'table' not in ln:
+        return 'tennis'
+    return None  # unknown — decided by query context
 
 
 def fetch_sport_event_list(sport):
@@ -69,9 +94,18 @@ def fetch_sport_event_list(sport):
         try:
             url = f'https://leon.ru/api-2/betline/search?ctag=ru-RU&q={q}'
             items = get_json(url)
-            if isinstance(items, list):
-                for e in items:
-                    if e.get('id') and _sport_matches(e, sport):
+            if not isinstance(items, list):
+                continue
+            for e in items:
+                if not e.get('id') or e['id'] in all_events:
+                    continue
+                classified = _classify(e)
+                if classified == sport:
+                    all_events[e['id']] = e
+                elif classified is None:
+                    # Trust query context: unknown events accepted for football
+                    # (hockey/tennis queries are specific enough to skip unknowns)
+                    if sport == 'football':
                         all_events[e['id']] = e
         except Exception as ex:
             print(f'[{sport} q={q}] {ex}')
