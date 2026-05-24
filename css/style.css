@@ -288,16 +288,73 @@ header {
   transition: width 0.5s;
 }
 
-/* History archive row */
+/* History / player stats block */
 .hist-row {
   font-size: 0.72rem; padding: 0.3rem 0.6rem;
   border-radius: 6px; margin-bottom: 0.6rem;
   border: 1px solid transparent;
 }
+.hist-block {
+  border-radius: 8px; margin-bottom: 0.65rem;
+  border: 1px solid transparent; overflow: hidden;
+}
+.hist-block.hist-ok      { border-color: rgba(34,197,94,0.28); background: rgba(34,197,94,0.06); }
+.hist-block.hist-warn    { border-color: rgba(245,158,11,0.3); background: rgba(245,158,11,0.06); }
+.hist-block.hist-neutral { border-color: var(--border2); background: var(--bg3); }
+.hist-header {
+  font-size: 0.69rem; font-weight: 600; padding: 0.3rem 0.6rem;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.hist-block.hist-ok   .hist-header { color: #4ade80; }
+.hist-block.hist-warn .hist-header { color: #fbbf24; }
+.hist-block.hist-neutral .hist-header { color: var(--text2); }
+
+/* Single-line player stat rows */
+.pstat {
+  display: flex; align-items: center; gap: 0.4rem;
+  padding: 0.25rem 0.6rem; font-size: 0.72rem; border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.pstat-name { flex: 1; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pstat-wr   { font-weight: 700; min-width: 36px; text-align: right; }
+.wr-high { color: var(--green); }
+.wr-low  { color: var(--red); }
+.pstat-form { font-family: monospace; font-size: 0.68rem; color: var(--text2); letter-spacing: 0.03em; }
+.pstat-m    { font-size: 0.66rem; color: var(--text3); min-width: 28px; text-align: right; }
+.h2h-row {
+  font-size: 0.69rem; color: var(--blue); padding: 0.22rem 0.6rem;
+  font-weight: 600;
+}
+
+/* History simple rows */
 .hist-ok      { background: rgba(34,197,94,0.08); border-color: rgba(34,197,94,0.25); color: #4ade80; }
 .hist-warn    { background: rgba(245,158,11,0.08); border-color: rgba(245,158,11,0.3); color: #fbbf24; }
 .hist-neutral { background: var(--bg3); border-color: var(--border); color: var(--text2); }
 .hist-loading { background: var(--bg3); border-color: var(--border); color: var(--text3); font-style: italic; }
+
+/* AI block */
+.btn-ai {
+  display: block; width: 100%; margin-bottom: 0.5rem;
+  background: rgba(56,189,248,0.09); border: 1px solid rgba(56,189,248,0.25);
+  color: var(--blue); border-radius: 7px; padding: 0.45rem; font-size: 0.78rem;
+  cursor: pointer; font-family: inherit; transition: background 0.15s;
+}
+.btn-ai:hover { background: rgba(56,189,248,0.16); }
+.ai-block {
+  background: rgba(56,189,248,0.06); border: 1px solid rgba(56,189,248,0.2);
+  border-radius: 8px; margin-bottom: 0.6rem; overflow: hidden;
+}
+.ai-header {
+  font-size: 0.68rem; font-weight: 600; color: var(--blue);
+  padding: 0.28rem 0.6rem; border-bottom: 1px solid rgba(56,189,248,0.1);
+  display: flex; justify-content: space-between; align-items: center;
+}
+.ai-source { color: var(--text3); font-weight: 400; font-size: 0.63rem; }
+.ai-text   { font-size: 0.73rem; color: var(--text); padding: 0.35rem 0.6rem; line-height: 1.45; }
+.ai-verdict {
+  font-size: 0.74rem; font-weight: 700; color: var(--green);
+  padding: 0.28rem 0.6rem; border-top: 1px solid rgba(56,189,248,0.1);
+  background: rgba(34,197,94,0.07);
+}
 
 /* Odds strip */
 .odds-strip {

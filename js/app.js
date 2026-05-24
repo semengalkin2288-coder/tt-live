@@ -103,6 +103,7 @@ const App = (() => {
   let isLoading      = false;
   let highlightedId  = null;
   const _historyCache = {};   // { matchId: history_data }
+  const _aiCache      = {};   // { matchId: ai_result }
   let _histFetchPending = false;
 
   function getBankroll() {
@@ -334,18 +335,64 @@ const App = (() => {
     grid.innerHTML = list.map(renderCard).join('');
   }
 
-  // ── History row ───────────────────────────────────────
+  // ── Player stats / history block ─────────────────────
   function historyRowHtml(m) {
     if (m.sport !== 'tt') return '';
-    if (!m.histLoaded) {
+    const h = _historyCache[m.id];
+
+    if (!h) {
       return m.isLive
-        ? `<div class="hist-row hist-loading">📁 Архив: загружается...</div>`
+        ? `<div class="hist-row hist-loading">📁 Статистика игроков: загружается...</div>`
         : '';
     }
-    if (!m.histLabel) return '';
-    const cls = m.histAgree === true ? 'hist-ok'
+
+    const p1 = h.p1, p2 = h.p2, h2h = h.h2h;
+    const hasData = (p1 && p1.matches >= 1) || (p2 && p2.matches >= 1);
+
+    if (!hasData) {
+      return `<div class="hist-row hist-neutral">📁 Игроки ещё не в базе (данные накапливаются)</div>`;
+    }
+
+    const cls = m.histAgree === true  ? 'hist-ok'
               : m.histAgree === false ? 'hist-warn' : 'hist-neutral';
-    return `<div class="hist-row ${cls}">📁 ${esc(m.histLabel)}</div>`;
+
+    const pRow = (nm, st) => !st || st.matches < 1 ? '' : `
+      <div class="pstat">
+        <span class="pstat-name">${esc(trunc(nm, 15))}</span>
+        <span class="pstat-wr ${st.winRate>=0.56?'wr-high':st.winRate<=0.44?'wr-low':''}">${(st.winRate*100).toFixed(0)}%</span>
+        <span class="pstat-form">${(st.form||[]).join('')}</span>
+        <span class="pstat-m">${st.matches}м</span>
+      </div>`;
+
+    const h2hHtml = h2h && h2h.total >= 1
+      ? `<div class="h2h-row">H2H: ${h2h.p1Wins}–${h2h.p2Wins} (${h2h.total} матчей)</div>` : '';
+
+    const verdict = m.histAgree === true  ? '✅ Архив подтверждает прогноз'
+                  : m.histAgree === false ? '⚠️ Архив противоречит прогнозу'
+                  : '📁 Статистика игроков';
+
+    return `<div class="hist-block ${cls}">
+      <div class="hist-header">${verdict}</div>
+      ${pRow(m.homeTeam, p1)}${pRow(m.awayTeam, p2)}${h2hHtml}
+    </div>`;
+  }
+
+  // ── AI analysis ────────────────────────────────────────
+  async function fetchAI(matchId) {
+    const m = analyzed.find(x => x.id === matchId);
+    if (!m || _aiCache[matchId]) { render(); return; }
+    const btn = document.querySelector(`[data-ai-btn="${matchId}"]`);
+    if (btn) btn.textContent = 'Анализ...';
+    try {
+      const url = `/api/ai-analysis?id=${matchId}`
+        + `&home=${encodeURIComponent(m.homeTeam)}&away=${encodeURIComponent(m.awayTeam)}`
+        + `&hs=${m.homeSets||0}&as=${m.awaySets||0}`
+        + `&chp=${m.currentHomePts||0}&cap=${m.currentAwayPts||0}`
+        + `&w1=${m.w1Odds||''}&w2=${m.w2Odds||''}`;
+      const res = await fetch(url, { cache: 'no-store' });
+      _aiCache[matchId] = await res.json();
+    } catch (e) { _aiCache[matchId] = { text: 'Ошибка AI анализа', source: '' }; }
+    render();
   }
 
   // ── Card ──────────────────────────────────────────────
@@ -485,8 +532,29 @@ const App = (() => {
           ${predsHtml}
         </div>
         ${kellyHtml}
+        ${aiBlockHtml(m)}
         ${leonBtn}
       </div>
+    </div>`;
+  }
+
+  function aiBlockHtml(m) {
+    if (!m.isLive || m.sport !== 'tt') return '';
+    const ai = _aiCache[m.id];
+    if (!ai) {
+      return `<button class="btn-ai" data-ai-btn="${m.id}" onclick="App.fetchAI('${m.id}')">🤖 AI анализ</button>`;
+    }
+    const src = ai.source ? `<span class="ai-source">${esc(ai.source)}</span>` : '';
+    // Parse ПРОГНОЗ line if present
+    const text = ai.text || '';
+    const prognozeMatch = text.match(/ПРОГНОЗ:\s*(.+?),\s*УВЕРЕННОСТЬ:\s*(\S+)/i);
+    const mainText = text.replace(/ПРОГНОЗ:.+/i, '').trim();
+    const prognozeHtml = prognozeMatch
+      ? `<div class="ai-verdict">🎯 ${esc(prognozeMatch[1])} — ${esc(prognozeMatch[2])}</div>` : '';
+    return `<div class="ai-block">
+      <div class="ai-header">🤖 AI анализ ${src}</div>
+      <div class="ai-text">${esc(mainText)}</div>
+      ${prognozeHtml}
     </div>`;
   }
 
@@ -548,5 +616,5 @@ const App = (() => {
   }
 
   document.addEventListener('DOMContentLoaded', init);
-  return { refresh, render, setSport, showBestPrediction, closeBestBanner, resetStats };
+  return { refresh, render, setSport, showBestPrediction, closeBestBanner, resetStats, fetchAI };
 })();

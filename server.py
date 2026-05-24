@@ -142,6 +142,173 @@ def _compute_player_stats(events, player_id):
     }
 
 
+# ── Self-built player database (accumulates from Leon match results) ──────────
+# Stored in memory; grows as matches complete. Survives server restarts via PLAYER_DB.
+
+PLAYER_DB   = {}   # {norm_name: {wins, losses, sets_won, sets_lost, recent:[W/L], opp:{name:[w,l]}}}
+_DB_LOCK    = threading.Lock()
+
+# Groq AI (free, https://console.groq.com → free API key → Render env var GROQ_API_KEY)
+GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')
+_AI_CACHE    = {}   # {key: {data, ts}}
+AI_CACHE_TTL = 90   # seconds
+
+
+def _norm(name):
+    return _re.sub(r'\s+', ' ', name.strip().lower())
+
+
+def record_tt_result(home_name, away_name, home_sets, away_sets):
+    """Record a finished TT match result into PLAYER_DB."""
+    hn, an = _norm(home_name), _norm(away_name)
+    if not hn or not an or home_sets + away_sets < 2:
+        return
+    home_won = home_sets > away_sets
+    with _DB_LOCK:
+        for nm, won, sw, sl, opp in [
+            (hn, home_won,  home_sets, away_sets, an),
+            (an, not home_won, away_sets, home_sets, hn),
+        ]:
+            if nm not in PLAYER_DB:
+                PLAYER_DB[nm] = {'wins': 0, 'losses': 0, 'sets_won': 0, 'sets_lost': 0, 'recent': [], 'opp': {}}
+            d = PLAYER_DB[nm]
+            d['wins']     += 1 if won else 0
+            d['losses']   += 0 if won else 1
+            d['sets_won']  += sw
+            d['sets_lost'] += sl
+            d['recent']    = (['W' if won else 'L'] + d['recent'])[:20]
+            if opp not in d['opp']: d['opp'][opp] = [0, 0]
+            d['opp'][opp][0 if won else 1] += 1
+
+
+def _db_stats(name):
+    d = PLAYER_DB.get(_norm(name))
+    if not d:
+        return None
+    total = d['wins'] + d['losses']
+    if total == 0:
+        return None
+    return {
+        'winRate':      round(d['wins'] / total, 3),
+        'matches':      total,
+        'wins':         d['wins'],
+        'form':         d['recent'][:5],
+        'avgSetMargin': round((d['sets_won'] - d['sets_lost']) / total, 2),
+        'source':       'leon',
+    }
+
+
+def get_local_player_stats(p1_name, p2_name):
+    """Stats from our self-built database (Leon results)."""
+    p1 = _db_stats(p1_name)
+    p2 = _db_stats(p2_name)
+    h2h = None
+    hn, an = _norm(p1_name), _norm(p2_name)
+    d = PLAYER_DB.get(hn, {})
+    opp = d.get('opp', {}).get(an)
+    if opp and sum(opp) > 0:
+        h2h = {'p1Wins': opp[0], 'p2Wins': opp[1], 'total': sum(opp)}
+    return {'p1': p1, 'p2': p2, 'h2h': h2h, 'source': 'leon-local', 'dbSize': len(PLAYER_DB)}
+
+
+# ── Groq AI + rule-based analysis ─────────────────────────────────────────────
+
+def _groq_chat(prompt, max_tokens=200):
+    payload = json.dumps({
+        'model': 'llama-3.3-70b-versatile',
+        'messages': [{'role': 'user', 'content': prompt}],
+        'max_tokens': max_tokens, 'temperature': 0.35,
+    }).encode('utf-8')
+    req = urllib.request.Request(
+        'https://api.groq.com/openai/v1/chat/completions',
+        data=payload,
+        headers={'Authorization': f'Bearer {GROQ_API_KEY}', 'Content-Type': 'application/json'},
+        method='POST',
+    )
+    with urllib.request.urlopen(req, context=SSL_CTX, timeout=12) as r:
+        return json.loads(r.read())['choices'][0]['message']['content'].strip()
+
+
+def _rule_based_ai(match, stats):
+    """Generate natural language analysis without AI."""
+    p1, p2, h2h = stats.get('p1'), stats.get('p2'), stats.get('h2h')
+    ht, at = match.get('homeTeam', '?'), match.get('awayTeam', '?')
+    hs, aws = match.get('homeSets', 0), match.get('awaySets', 0)
+    parts = []
+
+    if p1 and p2 and p1.get('matches', 0) >= 3 and p2.get('matches', 0) >= 3:
+        wr1, wr2 = int(p1['winRate'] * 100), int(p2['winRate'] * 100)
+        diff = wr1 - wr2
+        stronger = ht if diff > 0 else at
+        if abs(diff) >= 15:
+            parts.append(f"{stronger} значительно сильнее ({wr1}% vs {wr2}% побед)")
+        elif abs(diff) >= 7:
+            parts.append(f"{stronger} чуть сильнее по статистике ({wr1}% vs {wr2}%)")
+        else:
+            parts.append(f"Игроки примерно равны по статистике ({wr1}% vs {wr2}%)")
+        f1 = ''.join(p1.get('form', []))
+        f2 = ''.join(p2.get('form', []))
+        if f1 or f2:
+            parts.append(f"Форма: {ht}: {f1 or '?'} / {at}: {f2 or '?'}")
+
+    if h2h and h2h.get('total', 0) >= 2:
+        leader = ht if h2h['p1Wins'] > h2h['p2Wins'] else at
+        parts.append(f"Личные встречи: {ht} {h2h['p1Wins']}–{h2h['p2Wins']} {at} (лидирует {leader})")
+
+    if hs > aws:
+        parts.append(f"{ht} ведёт по партиям {hs}:{aws}")
+    elif aws > hs:
+        parts.append(f"{at} ведёт по партиям {hs}:{aws}")
+
+    return ' · '.join(parts) if parts else 'Недостаточно матчей для анализа (база накапливается)'
+
+
+def get_ai_analysis(event_id, home, away, match_data, stats):
+    now = time.time()
+    key = f'{event_id}_{home}'
+    with _DB_LOCK:
+        cached = _AI_CACHE.get(key)
+        if cached and now - cached['ts'] < AI_CACHE_TTL:
+            return cached['data']
+
+    if GROQ_API_KEY:
+        p1 = stats.get('p1') or {}
+        p2 = stats.get('p2') or {}
+        h2h = stats.get('h2h') or {}
+        hs  = match_data.get('homeSets', 0)
+        aws = match_data.get('awaySets', 0)
+        chp = match_data.get('currentHomePts', 0)
+        cap = match_data.get('currentAwayPts', 0)
+        prompt = (
+            f"Настольный теннис, лайв матч: {home} vs {away}\n"
+            f"Счёт по партиям: {hs}:{aws}. Текущая партия: {chp}:{cap}.\n"
+            f"Котировки: {home} @ {match_data.get('w1Odds','?')}, {away} @ {match_data.get('w2Odds','?')}.\n"
+        )
+        if p1.get('matches', 0) >= 3:
+            prompt += f"Статистика {home}: {int(p1.get('winRate', 0.5)*100)}% побед за {p1['matches']} матчей, форма: {''.join(p1.get('form',[]))}\n"
+        if p2.get('matches', 0) >= 3:
+            prompt += f"Статистика {away}: {int(p2.get('winRate', 0.5)*100)}% побед за {p2['matches']} матчей, форма: {''.join(p2.get('form',[]))}\n"
+        if h2h.get('total', 0) >= 2:
+            prompt += f"Личные встречи: {home} {h2h.get('p1Wins',0)}–{h2h.get('p2Wins',0)} {away}.\n"
+        prompt += (
+            "\nДай краткий беттинг-анализ (2 предложения, по-русски).\n"
+            "Последняя строка СТРОГО в формате:\n"
+            "ПРОГНОЗ: [имя игрока], УВЕРЕННОСТЬ: [ВЫСОКАЯ/СРЕДНЯЯ/НИЗКАЯ]"
+        )
+        try:
+            text = _groq_chat(prompt)
+            result = {'text': text, 'source': 'Groq · Llama 3.3 70B', 'hasGroq': True}
+        except Exception as ex:
+            print(f'[groq] {ex}')
+            result = {'text': _rule_based_ai(match_data, stats), 'source': 'Правила', 'hasGroq': False}
+    else:
+        result = {'text': _rule_based_ai(match_data, stats), 'source': 'Правила', 'hasGroq': False}
+
+    with _DB_LOCK:
+        _AI_CACHE[key] = {'data': result, 'ts': now}
+    return result
+
+
 def get_player_stats(p1_name, p2_name):
     """Return H2H + recent form for two players. Cached 6h."""
     now = time.time()
@@ -357,6 +524,9 @@ def parse_tt(base, detail=None):
             if not done: clh, cla = last['home'], last['away']
     mkts = ev.get('markets', [])
     w1, w2, to, tu, tl, hh, ha, hl = _odds_tt(mkts)
+    # Record finished matches into our player database
+    if hs >= 3 or aws >= 3:
+        record_tt_result(hn, an, hs, aws)
     return {
         'id': str(ev.get('id', base.get('id', ''))), 'source': 'leon', 'sport': 'tt',
         'homeTeam': hn, 'awayTeam': an, 'tournament': lg or 'Настольный теннис',
@@ -628,6 +798,8 @@ class Handler(SimpleHTTPRequestHandler):
             self._api()
         elif self.path.startswith('/api/player-stats'):
             self._player_stats_api()
+        elif self.path.startswith('/api/ai-analysis'):
+            self._ai_api()
         elif self.path == '/health':
             self.send_response(200)
             self.send_header('Content-Type', 'text/plain')
@@ -668,7 +840,49 @@ class Handler(SimpleHTTPRequestHandler):
             if not p1 or not p2:
                 self._json_resp(400, {'error': 'p1 and p2 required'})
                 return
-            self._json_resp(200, get_player_stats(p1, p2))
+            # Local DB first (always fast, no blocking)
+            result = get_local_player_stats(p1, p2)
+            # If local is empty, try sofascore (may fail on cloud IPs)
+            if not result['p1'] and not result['p2']:
+                try:
+                    sofa = get_player_stats(p1, p2)
+                    if sofa.get('p1') or sofa.get('p2'):
+                        result = sofa
+                except Exception as ex:
+                    result['sofascoreError'] = str(ex)
+            self._json_resp(200, result)
+        except Exception as ex:
+            self._json_resp(500, {'error': str(ex)})
+
+    def _ai_api(self):
+        try:
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            eid  = qs.get('id',   [''])[0]
+            home = qs.get('home', [''])[0].strip()
+            away = qs.get('away', [''])[0].strip()
+            if not home or not away:
+                self._json_resp(400, {'error': 'home and away required'})
+                return
+            stats = get_local_player_stats(home, away)
+            if not stats['p1'] and not stats['p2']:
+                try:
+                    sofa = get_player_stats(home, away)
+                    if sofa.get('p1') or sofa.get('p2'):
+                        stats = sofa
+                except Exception:
+                    pass
+            # Build minimal match_data from query params
+            match_data = {
+                'homeTeam': home, 'awayTeam': away,
+                'homeSets': int(qs.get('hs', ['0'])[0]),
+                'awaySets': int(qs.get('as', ['0'])[0]),
+                'currentHomePts': int(qs.get('chp', ['0'])[0]),
+                'currentAwayPts': int(qs.get('cap', ['0'])[0]),
+                'w1Odds': qs.get('w1', [None])[0],
+                'w2Odds': qs.get('w2', [None])[0],
+            }
+            result = get_ai_analysis(eid, home, away, match_data, stats)
+            self._json_resp(200, {**result, 'stats': stats, 'groqEnabled': bool(GROQ_API_KEY)})
         except Exception as ex:
             self._json_resp(500, {'error': str(ex)})
 
