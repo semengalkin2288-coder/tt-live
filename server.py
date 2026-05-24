@@ -18,6 +18,12 @@ _PLAYER_CACHE = {}
 _PLAYER_LOCK  = threading.Lock()
 PLAYER_TTL    = 3600 * 6  # 6 hours
 
+_ELO_DB   = {}   # {norm_name: elo_rating}
+_PAT_DB   = {}   # {sit_key: [home_wins, away_wins]}
+_ELO_LOCK = threading.Lock()
+ELO_K     = 24
+ELO_DEF   = 1500
+
 SSL_CTX = ssl.create_default_context()
 SSL_CTX.check_hostname = False
 SSL_CTX.verify_mode    = ssl.CERT_NONE
@@ -164,14 +170,40 @@ def _compute_player_stats(events, player_id):
 PLAYER_DB   = {}   # {norm_name: {wins, losses, sets_won, sets_lost, recent:[W/L], opp:{name:[w,l]}}}
 _DB_LOCK    = threading.Lock()
 
-# Groq AI (free, https://console.groq.com → free API key → Render env var GROQ_API_KEY)
-GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')
-_AI_CACHE    = {}   # {key: {data, ts}}
-AI_CACHE_TTL = 90   # seconds
-
 
 def _norm(name):
     return _re.sub(r'\s+', ' ', name.strip().lower())
+
+
+def _elo_get(name):
+    return _ELO_DB.get(_norm(name), ELO_DEF)
+
+def _elo_expected(r1, r2):
+    return 1.0 / (1 + 10 ** ((r2 - r1) / 400))
+
+def _elo_update(winner, loser):
+    rw, rl = _elo_get(winner), _elo_get(loser)
+    e = _elo_expected(rw, rl)
+    with _ELO_LOCK:
+        _ELO_DB[_norm(winner)] = round(rw + ELO_K * (1 - e), 1)
+        _ELO_DB[_norm(loser)]  = round(rl + ELO_K * (0 - (1 - e)), 1)
+
+def _pat_key(h_sets, a_sets, pt_diff):
+    diff_b = max(-4, min(4, round(pt_diff / 2) * 2))
+    return f'{h_sets}:{a_sets}|{diff_b}'
+
+def _pat_record(h_sets, a_sets, pt_diff, home_won):
+    key = _pat_key(h_sets, a_sets, pt_diff)
+    with _ELO_LOCK:
+        if key not in _PAT_DB: _PAT_DB[key] = [0, 0]
+        _PAT_DB[key][0 if home_won else 1] += 1
+
+def _pat_prob(h_sets, a_sets, pt_diff):
+    key = _pat_key(h_sets, a_sets, pt_diff)
+    c = _PAT_DB.get(key)
+    if not c or sum(c) < 5: return None
+    t = sum(c)
+    return {'homeProb': round(c[0] / t, 3), 'total': t, 'key': key}
 
 
 def record_tt_result(home_name, away_name, home_sets, away_sets):
@@ -195,6 +227,13 @@ def record_tt_result(home_name, away_name, home_sets, away_sets):
             d['recent']    = (['W' if won else 'L'] + d['recent'])[:20]
             if opp not in d['opp']: d['opp'][opp] = [0, 0]
             d['opp'][opp][0 if won else 1] += 1
+    winner = home_name if home_won else away_name
+    loser  = away_name if home_won else home_name
+    _elo_update(winner, loser)
+    ph = home_sets - (1 if home_won else 0)
+    pa = away_sets - (0 if home_won else 1)
+    if ph >= 0 and pa >= 0:
+        _pat_record(ph, pa, 0, home_won)
 
 
 def _db_stats(name):
@@ -224,7 +263,14 @@ def get_local_player_stats(p1_name, p2_name):
     opp = d.get('opp', {}).get(an)
     if opp and sum(opp) > 0:
         h2h = {'p1Wins': opp[0], 'p2Wins': opp[1], 'total': sum(opp)}
-    return {'p1': p1, 'p2': p2, 'h2h': h2h, 'source': 'leon-local', 'dbSize': len(PLAYER_DB)}
+    r1 = round(_elo_get(p1_name))
+    r2 = round(_elo_get(p2_name))
+    return {
+        'p1': p1, 'p2': p2, 'h2h': h2h,
+        'source': 'leon-local', 'dbSize': len(PLAYER_DB),
+        'elo': {'p1': r1, 'p2': r2, 'homeProb': round(_elo_expected(r1, r2), 3),
+                'p1Name': p1_name, 'p2Name': p2_name},
+    }
 
 
 # ── Groq AI + rule-based analysis ─────────────────────────────────────────────
@@ -277,52 +323,6 @@ def _rule_based_ai(match, stats):
         parts.append(f"{at} ведёт по партиям {hs}:{aws}")
 
     return ' · '.join(parts) if parts else 'Недостаточно матчей для анализа (база накапливается)'
-
-
-def get_ai_analysis(event_id, home, away, match_data, stats):
-    now = time.time()
-    key = f'{event_id}_{home}'
-    with _DB_LOCK:
-        cached = _AI_CACHE.get(key)
-        if cached and now - cached['ts'] < AI_CACHE_TTL:
-            return cached['data']
-
-    if GROQ_API_KEY:
-        p1 = stats.get('p1') or {}
-        p2 = stats.get('p2') or {}
-        h2h = stats.get('h2h') or {}
-        hs  = match_data.get('homeSets', 0)
-        aws = match_data.get('awaySets', 0)
-        chp = match_data.get('currentHomePts', 0)
-        cap = match_data.get('currentAwayPts', 0)
-        prompt = (
-            f"Настольный теннис, лайв матч: {home} vs {away}\n"
-            f"Счёт по партиям: {hs}:{aws}. Текущая партия: {chp}:{cap}.\n"
-            f"Котировки: {home} @ {match_data.get('w1Odds','?')}, {away} @ {match_data.get('w2Odds','?')}.\n"
-        )
-        if p1.get('matches', 0) >= 3:
-            prompt += f"Статистика {home}: {int(p1.get('winRate', 0.5)*100)}% побед за {p1['matches']} матчей, форма: {''.join(p1.get('form',[]))}\n"
-        if p2.get('matches', 0) >= 3:
-            prompt += f"Статистика {away}: {int(p2.get('winRate', 0.5)*100)}% побед за {p2['matches']} матчей, форма: {''.join(p2.get('form',[]))}\n"
-        if h2h.get('total', 0) >= 2:
-            prompt += f"Личные встречи: {home} {h2h.get('p1Wins',0)}–{h2h.get('p2Wins',0)} {away}.\n"
-        prompt += (
-            "\nДай краткий беттинг-анализ (2 предложения, по-русски).\n"
-            "Последняя строка СТРОГО в формате:\n"
-            "ПРОГНОЗ: [имя игрока], УВЕРЕННОСТЬ: [ВЫСОКАЯ/СРЕДНЯЯ/НИЗКАЯ]"
-        )
-        try:
-            text = _groq_chat(prompt)
-            result = {'text': text, 'source': 'Groq · Llama 3.3 70B', 'hasGroq': True}
-        except Exception as ex:
-            print(f'[groq] {ex}')
-            result = {'text': _rule_based_ai(match_data, stats), 'source': 'Правила', 'hasGroq': False}
-    else:
-        result = {'text': _rule_based_ai(match_data, stats), 'source': 'Правила', 'hasGroq': False}
-
-    with _DB_LOCK:
-        _AI_CACHE[key] = {'data': result, 'ts': now}
-    return result
 
 
 def get_player_stats(p1_name, p2_name):
@@ -921,8 +921,8 @@ class Handler(SimpleHTTPRequestHandler):
             self._player_stats_api()
         elif self.path.startswith('/api/ai-analysis'):
             self._ai_api()
-        elif self.path.startswith('/api/ai-analysis'):
-            self._ai_api()
+        elif self.path.startswith('/api/elo-stats'):
+            self._elo_api()
         elif self.path == '/health':
             self.send_response(200)
             self.send_header('Content-Type', 'text/plain')
@@ -966,12 +966,20 @@ class Handler(SimpleHTTPRequestHandler):
             homeProb = g('homeProb', '50')
             ev       = g('ev', '0')
             w1       = g('w1'); w2 = g('w2')
-            # Fetch player stats (cached)
-            stats = get_player_stats(p1, p2)
+            # Local stats first (fast), fallback to sofascore
+            stats = get_local_player_stats(p1, p2)
+            if not stats.get('p1') and not stats.get('p2'):
+                try:
+                    sofa = get_player_stats(p1, p2)
+                    if sofa.get('p1') or sofa.get('p2'):
+                        stats = sofa
+                except Exception:
+                    pass
             result = get_ai_analysis(p1, p2, score, homeProb, ev, w1, w2, stats)
-            self._json_resp(200, result)
+            self._json_resp(200, {**result, 'groqEnabled': bool(GROQ_API_KEY)})
         except Exception as ex:
-            self._json_resp(500, {'error': str(ex), 'text': 'Ошибка AI', 'source': ''})
+            print(f'[ai-api] {ex}')
+            self._json_resp(500, {'error': str(ex), 'text': 'Ошибка AI-сервера', 'source': ''})
 
     def _player_stats_api(self):
         try:
@@ -995,35 +1003,26 @@ class Handler(SimpleHTTPRequestHandler):
         except Exception as ex:
             self._json_resp(500, {'error': str(ex)})
 
-    def _ai_api(self):
+    def _elo_api(self):
         try:
-            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            eid  = qs.get('id',   [''])[0]
-            home = qs.get('home', [''])[0].strip()
-            away = qs.get('away', [''])[0].strip()
-            if not home or not away:
-                self._json_resp(400, {'error': 'home and away required'})
-                return
-            stats = get_local_player_stats(home, away)
-            if not stats['p1'] and not stats['p2']:
-                try:
-                    sofa = get_player_stats(home, away)
-                    if sofa.get('p1') or sofa.get('p2'):
-                        stats = sofa
-                except Exception:
-                    pass
-            # Build minimal match_data from query params
-            match_data = {
-                'homeTeam': home, 'awayTeam': away,
-                'homeSets': int(qs.get('hs', ['0'])[0]),
-                'awaySets': int(qs.get('as', ['0'])[0]),
-                'currentHomePts': int(qs.get('chp', ['0'])[0]),
-                'currentAwayPts': int(qs.get('cap', ['0'])[0]),
-                'w1Odds': qs.get('w1', [None])[0],
-                'w2Odds': qs.get('w2', [None])[0],
-            }
-            result = get_ai_analysis(eid, home, away, match_data, stats)
-            self._json_resp(200, {**result, 'stats': stats, 'groqEnabled': bool(GROQ_API_KEY)})
+            qs  = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            p1  = qs.get('p1', [''])[0].strip()
+            p2  = qs.get('p2', [''])[0].strip()
+            r1  = round(_elo_get(p1)) if p1 else ELO_DEF
+            r2  = round(_elo_get(p2)) if p2 else ELO_DEF
+            hs  = int(qs.get('hs', ['0'])[0])
+            as_ = int(qs.get('as', ['0'])[0])
+            hp  = int(qs.get('hp', ['0'])[0])
+            ap  = int(qs.get('ap', ['0'])[0])
+            pat = _pat_prob(hs, as_, hp - ap)
+            self._json_resp(200, {
+                'p1': {'name': p1, 'elo': r1},
+                'p2': {'name': p2, 'elo': r2},
+                'eloProb': round(_elo_expected(r1, r2), 3),
+                'pattern': pat,
+                'dbSize': len(_ELO_DB),
+                'patternSize': len(_PAT_DB),
+            })
         except Exception as ex:
             self._json_resp(500, {'error': str(ex)})
 

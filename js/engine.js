@@ -1,5 +1,5 @@
 // ============================================================
-// TT Live Engine v10.0
+// TT Live Engine v11.0
 // Источники сигнала:
 //   1. Текущий счёт + нестабильность (дюс = нет сигнала)
 //   2. История партий матча (моментум, BPPI, RLP)
@@ -295,7 +295,7 @@ const Engine = (() => {
   }
 
   // ── ГЛАВНАЯ ФУНКЦИЯ ───────────────────────────────────────
-  function analyze(event, bankroll = 1000, history = null, oddsMovement = null) {
+  function analyze(event, bankroll = 1000, history = null, oddsMovement = null, scoreData = null) {
     const {
       homeTeam, awayTeam, homeSets, awaySets,
       sets, currentSetNum, currentHomePts, currentAwayPts,
@@ -381,6 +381,28 @@ const Engine = (() => {
       trueHome = Math.min(0.93, trueHome + 0.025);
     } else if (domData.decisive && domData.score < -0.3) {
       trueHome = Math.max(0.07, trueHome - 0.025);
+    }
+
+    // ── Elo коррекция ─────────────────────────────────────
+    const eloProb = history?.elo?.homeProb;
+    if (eloProb !== undefined && Math.abs(eloProb - 0.5) >= 0.05) {
+      const eloDir   = eloProb > 0.5 ? 1 : -1;
+      const modelDir = trueHome > 0.5 ? 1 : -1;
+      if (eloDir === modelDir) {
+        trueHome = Math.min(0.92, trueHome + eloDir * Math.abs(eloProb - 0.5) * 0.04);
+      } else {
+        trueHome = 0.5 + (trueHome - 0.5) * 0.94;
+      }
+      trueHome = Math.max(0.05, Math.min(0.95, trueHome));
+    }
+
+    // ── Серия очков (runs boost) ──────────────────────────
+    if (scoreData && scoreData.recentRun !== 0) {
+      const runDir   = scoreData.recentRun > 0 ? 1 : -1;
+      const modelDir = trueHome > 0.5 ? 1 : -1;
+      if (runDir === modelDir) {
+        trueHome = Math.min(0.93, Math.max(0.07, trueHome + runDir * 0.012));
+      }
     }
 
     const trueAway = 1 - trueHome;
@@ -469,10 +491,11 @@ const Engine = (() => {
 
     preds.sort((a, b) => b.evPct - a.evPct);
 
-    const bestSig = preds[0]?.signal || 'none';
-    const topEV   = preds[0]?.evPct  || 0;
-    const topProb = preds[0]?.prob    || 0.5;
-    const topConf = confidence(topProb, topEV, setsPlayed, instab);
+    const bestSig    = preds[0]?.signal || 'none';
+    const topEV      = preds[0]?.evPct  || 0;
+    const topProb    = preds[0]?.prob    || 0.5;
+    const topConf    = confidence(topProb, topEV, setsPlayed, instab);
+    const scoreDistrib = matchScoreDistrib(homeSets, awaySets, setWinFinal, stw);
 
     const leonMargin = (w1Odds && w2Odds)
       ? ((1/w1Odds + 1/w2Odds - 1) * 100).toFixed(1) : null;
@@ -492,14 +515,37 @@ const Engine = (() => {
       histLoaded:  history !== null,
       domData,
       steamData:   { ...steam, drift: oddsMovement },
+      scoreDistrib,
+      _scoreVel:   scoreData ? { home: scoreData.homeVel, away: scoreData.awayVel, run: scoreData.recentRun } : null,
+      _eloData:    history?.elo || null,
       _instab: +instab.toFixed(2),
       _setWinFinal: +setWinFinal.toFixed(3),
     };
+  }
+
+  // ── Распределение итогового счёта матча ──────────────────
+  // Возвращает {score: prob} напр. {"3:0":0.125,"3:1":0.23,...}
+  function matchScoreDistrib(hSets, aSets, setWinP, stw = 3) {
+    const p = setWinP, q = 1 - p;
+    const result = {};
+    function dp(h, a, prob) {
+      if (h >= stw || a >= stw) {
+        const k = `${h}:${a}`;
+        result[k] = (result[k] || 0) + prob;
+        return;
+      }
+      dp(h + 1, a, prob * p);
+      dp(h, a + 1, prob * q);
+    }
+    dp(hSets, aSets, 1.0);
+    const out = {};
+    for (const [k, v] of Object.entries(result)) out[k] = +v.toFixed(3);
+    return out;
   }
 
   function isActionable(hSets, aSets) {
     return hSets < 3 && aSets < 3;
   }
 
-  return { analyze, isSetDone };
+  return { analyze, isSetDone, matchScoreDistrib };
 })();

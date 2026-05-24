@@ -1,5 +1,5 @@
 // ============================================================
-// Sports Live Analyzer — App v8.0
+// Sports Live Analyzer — App v11.0
 // ============================================================
 
 const SPORT_META = {
@@ -102,10 +102,41 @@ const App = (() => {
   let countdownTimer = null;
   let isLoading      = false;
   let highlightedId  = null;
-  const _historyCache = {};   // { matchId: history_data }
-  const _aiCache      = {};   // { matchId: ai_result }
-  const _oddsHistory  = {};   // { matchId: { initial, current } }
+  const _historyCache  = {};   // { matchId: history_data }
+  const _aiCache       = {};   // { matchId: ai_result }
+  const _oddsHistory   = {};   // { matchId: { initial, current } }
+  const _scoreTracker  = {};   // { matchId: { prevHomePts, prevAwayPts, prevTs, homeVel, awayVel, recentRun } }
   let _histFetchPending = false;
+
+  // ── Score velocity & runs tracking ───────────────────
+  function updateScoreTracker(rawEvents) {
+    const now = Date.now();
+    for (const e of (rawEvents || [])) {
+      if (!e.id || !e.isLive) continue;
+      const hp = e.currentHomePts || 0;
+      const ap = e.currentAwayPts || 0;
+      const t  = _scoreTracker[e.id];
+      if (!t) {
+        _scoreTracker[e.id] = { prevHomePts: hp, prevAwayPts: ap, prevTs: now, homeVel: 0, awayVel: 0, recentRun: 0 };
+        continue;
+      }
+      const dt = (now - t.prevTs) / 60000; // minutes
+      if (dt >= 0.15) {
+        const dh = Math.max(0, hp - t.prevHomePts);
+        const da = Math.max(0, ap - t.prevAwayPts);
+        if (dh + da > 0) {
+          t.homeVel  = +(dh / dt).toFixed(1);
+          t.awayVel  = +(da / dt).toFixed(1);
+          t.recentRun = dh > da * 1.5 ? 1 : da > dh * 1.5 ? -1 : 0;
+        }
+        t.prevHomePts = hp;
+        t.prevAwayPts = ap;
+        t.prevTs      = now;
+      }
+    }
+  }
+
+  function getScoreData(matchId) { return _scoreTracker[matchId] || null; }
 
   // ── Odds movement tracking ────────────────────────────
   function updateOddsHistory(rawEvents) {
@@ -226,13 +257,16 @@ const App = (() => {
       const data = await API.getLive(currentSport);
       const bankroll = getBankroll();
 
-      if (currentSport === 'tt') updateOddsHistory(data.events);
+      if (currentSport === 'tt') {
+        updateOddsHistory(data.events);
+        updateScoreTracker(data.events);
+      }
 
       analyzed = (data.events || []).map(e => {
         if (e.sport === 'football' || e.sport === 'hockey' || e.sport === 'tennis') {
           return SportsEngine.analyze(e, bankroll);
         }
-        return Engine.analyze(e, bankroll, _historyCache[e.id] || null, getOddsMovement(e.id));
+        return Engine.analyze(e, bankroll, _historyCache[e.id] || null, getOddsMovement(e.id), getScoreData(e.id));
       }).filter(Boolean);
 
       // Fetch history in background after initial render
@@ -368,7 +402,7 @@ const App = (() => {
     let list = analyzed.map(m => {
       if (m.sport === 'football' || m.sport === 'hockey' || m.sport === 'tennis')
         return SportsEngine.analyze(m, bankroll);
-      return Engine.analyze(m, bankroll, _historyCache[m.id] || null, getOddsMovement(m.id));
+      return Engine.analyze(m, bankroll, _historyCache[m.id] || null, getOddsMovement(m.id), getScoreData(m.id));
     }).filter(Boolean);
 
     if (filter === 'value')
@@ -433,9 +467,19 @@ const App = (() => {
                   : m.histAgree === false ? '⚠️ Архив противоречит прогнозу'
                   : '📁 Статистика игроков';
 
+    const elo = h.elo;
+    const eloHtml = elo && (elo.p1 !== 1500 || elo.p2 !== 1500) ? `
+      <div class="elo-row">
+        <span class="elo-label">Elo:</span>
+        <span class="elo-badge ${elo.p1 > elo.p2 ? 'elo-hi' : ''}">${esc(trunc(m.homeTeam,10))} ${elo.p1}</span>
+        <span class="elo-sep">vs</span>
+        <span class="elo-badge ${elo.p2 > elo.p1 ? 'elo-hi' : ''}">${esc(trunc(m.awayTeam,10))} ${elo.p2}</span>
+        <span class="elo-prob">${(elo.homeProb*100).toFixed(0)}% → ${(( 1-elo.homeProb)*100).toFixed(0)}%</span>
+      </div>` : '';
+
     return `<div class="hist-block ${cls}">
       <div class="hist-header">${verdict}</div>
-      ${pRow(m.homeTeam, p1)}${pRow(m.awayTeam, p2)}${h2hHtml}
+      ${pRow(m.homeTeam, p1)}${pRow(m.awayTeam, p2)}${h2hHtml}${eloHtml}
     </div>`;
   }
 
@@ -525,6 +569,27 @@ const App = (() => {
         </span>
       </div>` : '';
 
+    // Распределение счёта матча
+    const distribHtml = (() => {
+      if (!m.scoreDistrib || !m.isLive) return '';
+      const sorted = Object.entries(m.scoreDistrib).sort((a, b) => b[1] - a[1]).slice(0, 4);
+      const items  = sorted.map(([k, v], i) =>
+        `<span class="sd-item${i === 0 ? ' sd-top' : ''}">${k} ${(v * 100).toFixed(0)}%</span>`
+      ).join('');
+      return `<div class="score-distrib"><span class="sd-label">Сценарии:</span>${items}</div>`;
+    })();
+
+    // Скорость очков
+    const vel = m._scoreVel;
+    const velHtml = vel && (vel.home > 0 || vel.away > 0) ? `
+      <div class="vel-row">
+        <span class="vel-label">Темп:</span>
+        <span class="vel-home">${esc(trunc(m.homeTeam, 9))} ${vel.home}оч/мин</span>
+        <span class="vel-sep">↔</span>
+        <span class="vel-away">${esc(trunc(m.awayTeam, 9))} ${vel.away}оч/мин</span>
+        ${vel.run !== 0 ? `<span class="vel-run ${vel.run > 0 ? 'run-home' : 'run-away'}">${vel.run > 0 ? '🔥 серия ' + esc(trunc(m.homeTeam, 8)) : '🔥 серия ' + esc(trunc(m.awayTeam, 8))}</span>` : ''}
+      </div>` : '';
+
     const smiDir = m.momentumAdj > 2 ? '▲' : m.momentumAdj < -2 ? '▼' : '–';
     const smiCls = m.momentumAdj > 2 ? 'smi-up' : m.momentumAdj < -2 ? 'smi-down' : 'smi-neu';
 
@@ -601,6 +666,8 @@ const App = (() => {
         </div>
         ${historyRowHtml(m)}
         ${domHtml}
+        ${velHtml}
+        ${distribHtml}
         ${oddsHtml}
         <div class="preds-section">
           <div class="preds-title">📊 Прогнозы</div>
