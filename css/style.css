@@ -131,6 +131,11 @@ header {
   color: var(--text);
   border-bottom-color: var(--blue);
 }
+.tab-btn.tab-disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+  pointer-events: none;
+}
 
 /* ====================================================== */
 /* SUBHEADER                                              */

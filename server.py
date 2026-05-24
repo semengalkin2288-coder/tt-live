@@ -26,36 +26,26 @@ LEON_HEADERS = {
     'Referer':         'https://leon.ru/',
 }
 
-# Russian names are the primary key — Leon indexes categories in Russian
+# ТТ — охватываем ВСЕ лиги Леона
+TT_QUERIES = [
+    'Setka', 'Table+Tennis', 'Настольный', 'TTL', 'Ping+Pong', 'WTT',
+    'TT+Cup', 'Pro+TT', 'TT+Star', 'Liga+Pro', 'InPlay+TT',
+    'Butterfly', 'UTT', 'ITTF', 'pingpong',
+    'TT+League', 'TT+Series', 'TT+Tour', 'Virtual+TT',
+]
+
 SPORT_QUERIES = {
-    'tt': [
-        'Настольный+теннис', 'Table+Tennis', 'Setka', 'TTL', 'Ping+Pong', 'WTT',
-    ],
-    'football': [
-        'Футбол',  # primary: catches all Leon football categories at once
-        'Champions+League', 'Europa+League', 'Conference+League',
-        'Premier+League', 'La+Liga', 'Bundesliga', 'Serie+A', 'Ligue+1',
-        'Eredivisie', 'Primeira+Liga', 'Allsvenskan', 'Jupiler',
-        'РПЛ', 'MLS', 'Liga+MX', 'Brasileirao', 'J1+League', 'K+League',
-        'Nations+League', 'World+Cup', 'Copa+America', 'Кубок',
-    ],
-    'hockey': [
-        'Хоккей',  # primary
-        'КХЛ', 'NHL', 'SHL', 'Liiga', 'DEL', 'AHL', 'NLA',
-    ],
-    'tennis': [
-        'Теннис',  # primary (big tennis; table tennis is "настольный теннис")
-        'ATP', 'WTA', 'ITF', 'Roland+Garros', 'Wimbledon',
-    ],
+    'tt':       TT_QUERIES,
+    'football': ['Футбол', 'Champions+League', 'Europa+League', 'Conference+League',
+                 'Premier+League', 'La+Liga', 'Bundesliga', 'Serie+A', 'Ligue+1',
+                 'Eredivisie', 'РПЛ', 'MLS', 'Liga+MX', 'Brasileirao'],
+    'hockey':   ['Хоккей', 'КХЛ', 'NHL', 'SHL', 'Liiga', 'DEL', 'AHL'],
+    'tennis':   ['Теннис', 'ATP', 'WTA', 'ITF', 'Roland+Garros', 'Wimbledon'],
 }
 
-# Definitive sport signals by league name
-_TT_KW     = ['настольный', 'table tennis', 'table-tennis', 'setka', 'ttl',
-               'ping-pong', 'ping pong', 'wtt']
-_HOCKEY_KW = ['хоккей', 'hockey', 'кхл', 'nhl ', 'shl', 'liiga', 'del ',
-              'ahl', 'нхл', 'ice hl', 'nla']
+_HOCKEY_KW = ['хоккей', 'hockey', 'кхл', 'nhl', 'shl', 'liiga', 'del ', 'ahl', 'нхл']
 _BIGTEN_KW = ['atp', 'wta', 'itf', 'roland garros', 'wimbledon', 'us open',
-              'australian open', 'challenger', 'davis cup', 'fed cup', 'billie jean']
+              'australian open', 'challenger', 'davis cup', 'fed cup']
 
 
 def get_json(url, timeout=12):
@@ -71,21 +61,14 @@ def _league_name(ev):
     return ''
 
 
-def _classify(ev):
-    """Return sport key or None if ambiguous."""
+def _is_not_tt(ev):
+    """True if event is clearly NOT table tennis (hockey/big tennis/football)."""
     ln = _league_name(ev)
-    if any(kw in ln for kw in _TT_KW):
-        return 'tt'
-    if any(kw in ln for kw in _HOCKEY_KW):
-        return 'hockey'
-    if any(kw in ln for kw in _BIGTEN_KW):
-        return 'tennis'
-    # 'теннис' without 'настольный' = big tennis
-    if 'теннис' in ln and 'настольный' not in ln:
-        return 'tennis'
-    if 'tennis' in ln and 'table' not in ln:
-        return 'tennis'
-    return None  # unknown — decided by query context
+    if any(kw in ln for kw in _HOCKEY_KW): return True
+    if any(kw in ln for kw in _BIGTEN_KW): return True
+    if 'теннис' in ln and 'настольный' not in ln: return True
+    if 'tennis' in ln and 'table' not in ln and 'настольный' not in ln: return True
+    return False
 
 
 def fetch_sport_event_list(sport):
@@ -97,18 +80,35 @@ def fetch_sport_event_list(sport):
             if not isinstance(items, list):
                 continue
             for e in items:
-                if not e.get('id') or e['id'] in all_events:
+                eid = e.get('id')
+                if not eid or eid in all_events:
                     continue
-                classified = _classify(e)
-                if classified == sport:
-                    all_events[e['id']] = e
-                elif classified is None:
-                    # Trust query context: unknown events accepted for football
-                    # (hockey/tennis queries are specific enough to skip unknowns)
-                    if sport == 'football':
-                        all_events[e['id']] = e
+
+                if sport == 'tt':
+                    # TT: accept everything from TT queries EXCEPT clearly other sports
+                    if not _is_not_tt(e):
+                        all_events[eid] = e
+                elif sport == 'hockey':
+                    ln = _league_name(e)
+                    if any(kw in ln for kw in _HOCKEY_KW):
+                        all_events[eid] = e
+                elif sport == 'tennis':
+                    ln = _league_name(e)
+                    has_tennis = any(kw in ln for kw in _BIGTEN_KW) or \
+                                 ('теннис' in ln and 'настольный' not in ln) or \
+                                 ('tennis' in ln and 'table' not in ln)
+                    if has_tennis:
+                        all_events[eid] = e
+                elif sport == 'football':
+                    ln = _league_name(e)
+                    is_other = any(kw in ln for kw in _HOCKEY_KW) or \
+                               any(kw in ln for kw in _BIGTEN_KW) or \
+                               ('настольный' in ln) or ('table tennis' in ln)
+                    if not is_other:
+                        all_events[eid] = e
         except Exception as ex:
             print(f'[{sport} q={q}] {ex}')
+
     live = sum(1 for e in all_events.values() if e.get('matchPhase') == 'IN_PLAY')
     pre  = sum(1 for e in all_events.values() if e.get('matchPhase') == 'PRE_GAME')
     print(f'[{sport}] total={len(all_events)} live={live} pre={pre}')
