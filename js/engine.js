@@ -1,10 +1,10 @@
 // ============================================================
-// TT Live Engine v8.0
+// TT Live Engine v9.0
 // Ключевые принципы:
 //   1. Сигнал только при ЯВНОМ преимуществе (не в спорных ситуациях)
 //   2. Стабильность — избегаем дюса и близких счётов
 //   3. Три источника сигнала: счёт в партии + история партий + котировки
-//   4. Все три должны согласовываться для high-сигнала
+//   4. HIGH сигнал ТОЛЬКО когда математика + архив согласны
 // ============================================================
 
 const Engine = (() => {
@@ -166,18 +166,80 @@ const Engine = (() => {
     return (hw / recent.length - 0.5) * 0.07;
   }
 
+  // ── Архивный анализ ───────────────────────────────────────
+  // Принимает history от /api/player-stats, возвращает {agree, strength, label}
+  function evalHistory(history, modelFavorsHome) {
+    if (!history) return { agree: null, strength: 0, label: null };
+    const p1  = history.p1;   // home player stats
+    const p2  = history.p2;   // away player stats
+    const h2h = history.h2h;
+    const signals = [];
+
+    // Win rate signal (нужно >= 8 матчей у каждого)
+    if (p1 && p2 && p1.matches >= 8 && p2.matches >= 8) {
+      const diff = p1.winRate - p2.winRate;
+      if (Math.abs(diff) >= 0.08) {
+        signals.push({ favHome: diff > 0, strength: Math.min(1, Math.abs(diff) / 0.35) });
+      }
+    }
+
+    // H2H signal (нужно >= 3 встречи)
+    if (h2h && h2h.total >= 3) {
+      const rate = h2h.p1Wins / h2h.total;
+      const diff = rate - 0.5;
+      if (Math.abs(diff) >= 0.15) {
+        const w = Math.min(h2h.total, 12) / 12;
+        signals.push({ favHome: diff > 0, strength: Math.min(1, Math.abs(diff) / 0.4) * w });
+      }
+    }
+
+    // Recent form signal (последние 5 матчей)
+    if (p1 && p2 && p1.form && p1.form.length >= 3 && p2.form && p2.form.length >= 3) {
+      const r1 = p1.form.filter(f => f === 'W').length / p1.form.length;
+      const r2 = p2.form.filter(f => f === 'W').length / p2.form.length;
+      const diff = r1 - r2;
+      if (Math.abs(diff) >= 0.2) {
+        signals.push({ favHome: diff > 0, strength: Math.abs(diff) * 0.6 });
+      }
+    }
+
+    if (!signals.length) return { agree: null, strength: 0, label: '—' };
+
+    const agreeCount = signals.filter(s => s.favHome === modelFavorsHome).length;
+    const strength   = signals.reduce((s, x) => s + x.strength, 0) / signals.length;
+    const agree      = agreeCount > signals.length - agreeCount;
+
+    // Build label for UI
+    const parts = [];
+    if (p1 && p2 && p1.matches >= 5) {
+      parts.push(`${(p1.winRate*100).toFixed(0)}% vs ${(p2.winRate*100).toFixed(0)}%`);
+    }
+    if (h2h && h2h.total >= 3) {
+      parts.push(`H2H ${h2h.p1Wins}-${h2h.p2Wins}`);
+    }
+    if (p1 && p1.form.length >= 3) {
+      parts.push(`Форма: ${p1.form.join('')} / ${(p2 && p2.form || []).join('')}`);
+    }
+    const prefix = agree ? '✅' : '⚠️';
+    const label  = parts.length ? `${prefix} ${parts.join(' · ')}` : null;
+
+    return { agree, strength, label, signals: signals.length };
+  }
+
   // ── Уровень сигнала ───────────────────────────────────────
-  // evPct: ожидаемая ценность, prob: вероятность по модели,
-  // instab: нестабильность ситуации (0=стабильно)
-  // agreement: согласие между моделью и рынком (0=расходятся, 1=согласны)
-  function signalLevel(evPct, prob, instab, agreement) {
-    // Не сигналить в нестабильных ситуациях
+  // HIGH только при согласии математики И архива
+  function signalLevel(evPct, prob, instab, histAgree, histStrength) {
     if (instab > 0.6) return 'none';
 
-    // HIGH: чёткое преимущество, EV высокий, ситуация стабильная
-    if (evPct >= 7  && prob >= 0.65 && instab <= 0.2) return 'high';
-    // MEDIUM: хорошее преимущество, умеренный EV
-    if (evPct >= 3.5 && prob >= 0.59 && instab <= 0.35) return 'medium';
+    // HIGH: нужно архивное подтверждение + сильная математика
+    if (evPct >= 6 && prob >= 0.64 && instab <= 0.25 && histAgree === true && histStrength >= 0.25)
+      return 'high';
+    // MEDIUM: хорошая математика (архив может не совпадать, но не противоречить)
+    if (evPct >= 3.5 && prob >= 0.59 && instab <= 0.35 && histAgree !== false)
+      return 'medium';
+    // MEDIUM без архива — допускаем если EV очень высокий
+    if (evPct >= 5 && prob >= 0.62 && instab <= 0.3 && histAgree === null)
+      return 'medium';
     // LOW: слабый сигнал
     if (evPct >= 1.5 && prob >= 0.55 && instab <= 0.5) return 'low';
     return 'none';
@@ -196,7 +258,7 @@ const Engine = (() => {
   }
 
   // ── ГЛАВНАЯ ФУНКЦИЯ ───────────────────────────────────────
-  function analyze(event, bankroll = 1000) {
+  function analyze(event, bankroll = 1000, history = null) {
     const {
       homeTeam, awayTeam, homeSets, awaySets,
       sets, currentSetNum, currentHomePts, currentAwayPts,
@@ -245,18 +307,29 @@ const Engine = (() => {
     const mktProbs   = noVigProb(w1Odds, w2Odds);
 
     // Финальная вероятность: блендинг модели и рынка
-    // Чем больше сыграно, тем больше доверяем модели
     const modelWeight = Math.min(0.70, 0.40 + doneSets.length * 0.12);
-    const trueHome = Math.max(0.05, Math.min(0.95,
+    let trueHome = Math.max(0.05, Math.min(0.95,
       modelWeight * matchModel + (1 - modelWeight) * mktProbs.home
     ));
+
+    // ── Архивная коррекция ────────────────────────────────
+    const hist = evalHistory(history, trueHome > 0.5);
+    if (hist.agree !== null && hist.strength > 0.15) {
+      const dir = trueHome > 0.5 ? 1 : -1;
+      if (hist.agree) {
+        // Архив подтверждает — усиливаем уверенность
+        trueHome = Math.min(0.92, trueHome + dir * hist.strength * 0.07);
+      } else {
+        // Архив противоречит — ослабляем к 0.5
+        trueHome = 0.5 + (trueHome - 0.5) * (1 - hist.strength * 0.45);
+      }
+      trueHome = Math.max(0.05, Math.min(0.95, trueHome));
+    }
+
     const trueAway = 1 - trueHome;
 
-    // Согласие рынка с моделью (1 = полное согласие)
-    const mktAgreementHome = 1 - Math.min(1, Math.abs(matchModel - mktProbs.home) / 0.3);
-
-    const effW1 = w1Odds || Math.max(1.05, 1 / (matchModel * 0.94));
-    const effW2 = w2Odds || Math.max(1.05, 1 / ((1-matchModel) * 0.94));
+    const effW1 = w1Odds || Math.max(1.05, 1 / (trueHome * 0.94));
+    const effW2 = w2Odds || Math.max(1.05, 1 / (trueAway * 0.94));
 
     const evM1 = ev(trueHome, effW1);
     const evM2 = ev(trueAway, effW2);
@@ -289,7 +362,7 @@ const Engine = (() => {
     function addPred(tag, market, label, prob, mktProb, odds, evPct, ph) {
       if (!odds || odds <= 1.05) return;
       if (!isActionable(homeSets, awaySets)) return;
-      const sig = signalLevel(evPct, prob, instab, mktAgreementHome);
+      const sig = signalLevel(evPct, prob, instab, hist.agree, hist.strength);
       if (sig === 'none') return;
       preds.push({
         tag, market, label, prob, odds, evPct,
@@ -356,7 +429,10 @@ const Engine = (() => {
       setWinHomeProb:   Math.round(setWinRaw * 100),
       doneSets, currentPts: currentHomePts + currentAwayPts,
       momentumAdj: +(momentumAdj * 100).toFixed(1),
-      // Для отладки
+      histLabel:   hist.label,
+      histAgree:   hist.agree,
+      histStrength: hist.strength,
+      histLoaded:  history !== null,
       _instab: +instab.toFixed(2),
       _setWinFinal: +setWinFinal.toFixed(3),
     };

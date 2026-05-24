@@ -1,5 +1,5 @@
 // ============================================================
-// Sports Live Analyzer — App v7.0
+// Sports Live Analyzer — App v8.0
 // ============================================================
 
 const SPORT_META = {
@@ -102,10 +102,32 @@ const App = (() => {
   let countdownTimer = null;
   let isLoading      = false;
   let highlightedId  = null;
+  const _historyCache = {};   // { matchId: history_data }
+  let _histFetchPending = false;
 
   function getBankroll() {
     const v = parseInt(document.getElementById('bankroll-input')?.value || '1000');
     return Math.max(100, isNaN(v) ? 1000 : v);
+  }
+
+  // ── History background fetch ──────────────────────────
+  async function fetchHistoryForMatches(matches) {
+    if (_histFetchPending) return;
+    _histFetchPending = true;
+    const live = matches.filter(m => m.isLive && m.sport === 'tt');
+    let changed = false;
+    await Promise.allSettled(live.map(async m => {
+      if (_historyCache[m.id]) return; // already loaded
+      try {
+        const url = `/api/player-stats?p1=${encodeURIComponent(m.homeTeam)}&p2=${encodeURIComponent(m.awayTeam)}`;
+        const res = await fetch(url, { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data.error) { _historyCache[m.id] = data; changed = true; }
+      } catch { /* network error — ignore */ }
+    }));
+    _histFetchPending = false;
+    if (changed) render();
   }
 
   // ── Sport tab switch ──────────────────────────────────
@@ -114,6 +136,8 @@ const App = (() => {
     currentSport = sport;
     analyzed = [];
     highlightedId = null;
+    // Clear history cache on sport switch
+    Object.keys(_historyCache).forEach(k => delete _historyCache[k]);
 
     // Update tab UI
     document.querySelectorAll('.tab-btn').forEach(b => {
@@ -145,8 +169,13 @@ const App = (() => {
         if (e.sport === 'football' || e.sport === 'hockey' || e.sport === 'tennis') {
           return SportsEngine.analyze(e, bankroll);
         }
-        return Engine.analyze(e, bankroll);
+        return Engine.analyze(e, bankroll, _historyCache[e.id] || null);
       }).filter(Boolean);
+
+      // Fetch history in background after initial render
+      if (currentSport === 'tt') {
+        fetchHistoryForMatches(analyzed);
+      }
 
       const stats = Stats.processRefresh(analyzed, currentSport);
       updateStatsBar(stats);
@@ -276,7 +305,7 @@ const App = (() => {
     let list = analyzed.map(m => {
       if (m.sport === 'football' || m.sport === 'hockey' || m.sport === 'tennis')
         return SportsEngine.analyze(m, bankroll);
-      return Engine.analyze(m, bankroll);
+      return Engine.analyze(m, bankroll, _historyCache[m.id] || null);
     }).filter(Boolean);
 
     if (filter === 'value')
@@ -303,6 +332,20 @@ const App = (() => {
       return;
     }
     grid.innerHTML = list.map(renderCard).join('');
+  }
+
+  // ── History row ───────────────────────────────────────
+  function historyRowHtml(m) {
+    if (m.sport !== 'tt') return '';
+    if (!m.histLoaded) {
+      return m.isLive
+        ? `<div class="hist-row hist-loading">📁 Архив: загружается...</div>`
+        : '';
+    }
+    if (!m.histLabel) return '';
+    const cls = m.histAgree === true ? 'hist-ok'
+              : m.histAgree === false ? 'hist-warn' : 'hist-neutral';
+    return `<div class="hist-row ${cls}">📁 ${esc(m.histLabel)}</div>`;
   }
 
   // ── Card ──────────────────────────────────────────────
@@ -435,6 +478,7 @@ const App = (() => {
             <div class="mfill home" style="width:${m.momentum}%"></div>
           </div>
         </div>
+        ${historyRowHtml(m)}
         ${oddsHtml}
         <div class="preds-section">
           <div class="preds-title">📊 Прогнозы</div>

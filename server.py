@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sports Live Analyzer — Backend v4 | Leon.ru | TT·Football·Hockey·Tennis"""
+"""Sports Live Analyzer — Backend v5 | Leon.ru + Sofascore | TT·Football·Hockey·Tennis"""
 
 import json, os, re as _re, ssl, time, threading, webbrowser
 import urllib.request, urllib.parse, urllib.error
@@ -13,6 +13,10 @@ SPORTS  = ['tt', 'football', 'hockey', 'tennis']
 _caches = {s: {'events': [], 'ts': 0, 'source': ''} for s in SPORTS}
 _lock   = threading.Lock()
 
+_PLAYER_CACHE = {}
+_PLAYER_LOCK  = threading.Lock()
+PLAYER_TTL    = 3600 * 6  # 6 hours
+
 SSL_CTX = ssl.create_default_context()
 SSL_CTX.check_hostname = False
 SSL_CTX.verify_mode    = ssl.CERT_NONE
@@ -24,6 +28,16 @@ LEON_HEADERS = {
     'Accept':          'application/json, text/plain, */*',
     'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8',
     'Referer':         'https://leon.ru/',
+}
+
+SOFA_HEADERS = {
+    'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                   'AppleWebKit/537.36 (KHTML, like Gecko) '
+                   'Chrome/124.0.0.0 Safari/537.36'),
+    'Accept':          'application/json',
+    'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8',
+    'Referer':         'https://www.sofascore.com/',
+    'Origin':          'https://www.sofascore.com',
 }
 
 # ТТ — охватываем ВСЕ лиги Леона
@@ -52,6 +66,126 @@ def get_json(url, timeout=12):
     req = urllib.request.Request(url, headers=LEON_HEADERS)
     with urllib.request.urlopen(req, context=SSL_CTX, timeout=timeout) as r:
         return json.loads(r.read().decode('utf-8'))
+
+
+def sofa_json(url, timeout=8):
+    req = urllib.request.Request(url, headers=SOFA_HEADERS)
+    with urllib.request.urlopen(req, context=SSL_CTX, timeout=timeout) as r:
+        return json.loads(r.read().decode('utf-8'))
+
+
+# ── Sofascore Player History ─────────────────────────────────────────────────
+
+def _search_player_sofa(name):
+    """Search sofascore for player by name, return player id or None."""
+    q = urllib.parse.quote(name.strip())
+    data = sofa_json(f'https://api.sofascore.com/api/v1/search/all/?q={q}&page=0')
+    players = data.get('players', [])
+    # Prefer table tennis players
+    for item in players:
+        p = item.get('player', {})
+        sport_slug = (p.get('sport') or {}).get('slug', '')
+        sport_name = (p.get('sport') or {}).get('name', '').lower()
+        if 'table' in sport_name or 'настольный' in sport_name or sport_slug == 'table-tennis':
+            return p['id']
+    # Fallback: first player result
+    if players:
+        return players[0].get('player', {}).get('id')
+    return None
+
+
+def _get_player_events_sofa(player_id):
+    """Fetch last ~40 matches for a player from sofascore (2 pages)."""
+    all_events = []
+    for page in range(2):
+        try:
+            data = sofa_json(f'https://api.sofascore.com/api/v1/player/{player_id}/events/last/{page}')
+            events = data.get('events', [])
+            if not events:
+                break
+            all_events.extend(events)
+        except Exception:
+            break
+    return all_events
+
+
+def _compute_player_stats(events, player_id):
+    """Compute winRate, form (last 5), avgSetMargin from events."""
+    wins = 0
+    total = 0
+    form = []
+    margins = []
+    for ev in events[:25]:
+        home_id = (ev.get('homeTeam') or {}).get('id')
+        away_id = (ev.get('awayTeam') or {}).get('id')
+        wc = ev.get('winnerCode')
+        if wc not in (1, 2):
+            continue
+        is_home = (home_id == player_id)
+        is_away = (away_id == player_id)
+        if not is_home and not is_away:
+            continue
+        player_won = (is_home and wc == 1) or (is_away and wc == 2)
+        h_sets = (ev.get('homeScore') or {}).get('current', 0) or 0
+        a_sets = (ev.get('awayScore') or {}).get('current', 0) or 0
+        if h_sets + a_sets > 0:
+            margins.append(abs(h_sets - a_sets))
+        total += 1
+        wins += 1 if player_won else 0
+        form.append('W' if player_won else 'L')
+    return {
+        'winRate':      round(wins / total, 3) if total else 0.5,
+        'matches':      total,
+        'wins':         wins,
+        'form':         form[:5],
+        'avgSetMargin': round(sum(margins) / len(margins), 2) if margins else 0.0,
+    }
+
+
+def get_player_stats(p1_name, p2_name):
+    """Return H2H + recent form for two players. Cached 6h."""
+    now = time.time()
+    cache_key = (p1_name.lower().strip(), p2_name.lower().strip())
+    with _PLAYER_LOCK:
+        cached = _PLAYER_CACHE.get(cache_key)
+        if cached and now - cached['ts'] < PLAYER_TTL:
+            return cached['data']
+
+    result = {'p1': None, 'p2': None, 'h2h': None}
+    try:
+        p1_id = _search_player_sofa(p1_name)
+        p2_id = _search_player_sofa(p2_name)
+
+        if p1_id:
+            evs1 = _get_player_events_sofa(p1_id)
+            result['p1'] = {'id': p1_id, 'name': p1_name, **_compute_player_stats(evs1, p1_id)}
+            # H2H: scan p1 events for matches against p2
+            if p2_id:
+                h1 = h2 = 0
+                for ev in evs1:
+                    ht = (ev.get('homeTeam') or {}).get('id')
+                    at = (ev.get('awayTeam') or {}).get('id')
+                    wc = ev.get('winnerCode')
+                    if {ht, at} == {p1_id, p2_id} and wc in (1, 2):
+                        p1_home = ht == p1_id
+                        if (p1_home and wc == 1) or (not p1_home and wc == 2):
+                            h1 += 1
+                        else:
+                            h2 += 1
+                if h1 + h2 > 0:
+                    result['h2h'] = {'p1Wins': h1, 'p2Wins': h2, 'total': h1 + h2}
+
+        if p2_id:
+            evs2 = _get_player_events_sofa(p2_id)
+            result['p2'] = {'id': p2_id, 'name': p2_name, **_compute_player_stats(evs2, p2_id)}
+
+    except Exception as ex:
+        print(f'[player-stats] {ex}')
+        result['error'] = str(ex)
+
+    with _PLAYER_LOCK:
+        _PLAYER_CACHE[cache_key] = {'data': result, 'ts': now}
+    return result
 
 
 def _league_name(ev):
@@ -492,6 +626,8 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith('/api/live'):
             self._api()
+        elif self.path.startswith('/api/player-stats'):
+            self._player_stats_api()
         elif self.path == '/health':
             self.send_response(200)
             self.send_header('Content-Type', 'text/plain')
@@ -506,26 +642,35 @@ class Handler(SimpleHTTPRequestHandler):
             sport = qs.get('sport', ['tt'])[0]
             if sport not in SPORTS:
                 sport = 'tt'
-            res  = get_sport_data(sport)
-            body = json.dumps({
+            res = get_sport_data(sport)
+            self._json_resp(200, {
                 'events': res['events'], 'source': res['source'],
                 'count': len(res['events']), 'sport': sport, 'ts': int(time.time()),
-            }, ensure_ascii=False).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.send_header('Content-Length', str(len(body)))
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.send_header('Cache-Control', 'no-cache')
-            self.end_headers()
-            self.wfile.write(body)
+            })
         except Exception as ex:
-            body = json.dumps({'error': str(ex), 'events': []}, ensure_ascii=False).encode()
-            self.send_response(500)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Length', str(len(body)))
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.end_headers()
-            self.wfile.write(body)
+            self._json_resp(500, {'error': str(ex), 'events': []})
+
+    def _json_resp(self, code, data):
+        body = json.dumps(data, ensure_ascii=False).encode('utf-8')
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Cache-Control', 'no-cache')
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _player_stats_api(self):
+        try:
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            p1 = qs.get('p1', [''])[0].strip()
+            p2 = qs.get('p2', [''])[0].strip()
+            if not p1 or not p2:
+                self._json_resp(400, {'error': 'p1 and p2 required'})
+                return
+            self._json_resp(200, get_player_stats(p1, p2))
+        except Exception as ex:
+            self._json_resp(500, {'error': str(ex)})
 
     def log_message(self, fmt, *args):
         if args and '/api/' in str(args[0]):
