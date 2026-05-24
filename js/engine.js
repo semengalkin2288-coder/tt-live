@@ -1,10 +1,12 @@
 // ============================================================
-// TT Live Engine v9.0
-// Ключевые принципы:
-//   1. Сигнал только при ЯВНОМ преимуществе (не в спорных ситуациях)
-//   2. Стабильность — избегаем дюса и близких счётов
-//   3. Три источника сигнала: счёт в партии + история партий + котировки
-//   4. HIGH сигнал ТОЛЬКО когда математика + архив согласны
+// TT Live Engine v10.0
+// Источники сигнала:
+//   1. Текущий счёт + нестабильность (дюс = нет сигнала)
+//   2. История партий матча (моментум, BPPI, RLP)
+//   3. Архив игрока (win rate, форма, H2H, сеты, очки)
+//   4. Движение котировок (умные деньги / стим)
+//   5. Доминирование по очкам (насколько убедительны победы)
+// HIGH = математика + (архив ИЛИ стим), нет дюса, нет противоречий
 // ============================================================
 
 const Engine = (() => {
@@ -136,6 +138,38 @@ const Engine = (() => {
     return donePts + curPts + remCur + afterCur * avgSet;
   }
 
+  // ── Доминирование по очкам в партиях ─────────────────────
+  // Как убедительно побеждает каждый игрок (avg margin per set won)
+  // Возвращает score: >0 = дом доминирует, <0 = гость доминирует
+  function pointDominance(doneSets) {
+    if (!doneSets.length) return { score: 0, homeAvg: 0, awayAvg: 0, decisive: false };
+    const hMargins = doneSets.filter(s => s.home > s.away).map(s => s.home - s.away);
+    const aMargins = doneSets.filter(s => s.away > s.home).map(s => s.away - s.home);
+    const hAvg = hMargins.length ? hMargins.reduce((a,b)=>a+b,0)/hMargins.length : 0;
+    const aAvg = aMargins.length ? aMargins.reduce((a,b)=>a+b,0)/aMargins.length : 0;
+    // Взвешенный счёт с учётом количества побед
+    const hScore = hAvg * hMargins.length;
+    const aScore = aAvg * aMargins.length;
+    const score  = (hScore - aScore) / doneSets.length;
+    return {
+      score: +(score / 6).toFixed(2),   // нормализовано -1..1
+      homeAvg: +hAvg.toFixed(1),
+      awayAvg: +aAvg.toFixed(1),
+      decisive: hAvg >= 5 || aAvg >= 5, // кто-то выигрывает «разгромом»
+    };
+  }
+
+  // ── Умные деньги (steam) ──────────────────────────────────
+  // drift > 0 значит кф упали = ставили на этого игрока
+  function steamSignal(movement, favorsHome) {
+    if (!movement) return { agrees: null, strength: 0 };
+    const drift = favorsHome ? movement.w1Drift : movement.w2Drift;
+    if (!drift || Math.abs(drift) < 3) return { agrees: null, strength: 0 };
+    const agrees = drift > 0; // кф упали на нашего игрока = умные деньги за нас
+    const strength = Math.min(1, Math.abs(drift) / 15);
+    return { agrees, strength };
+  }
+
   // ── SMI — взвешенный моментум по партиям ─────────────────
   function smi(doneSets) {
     if (!doneSets.length) return 0;
@@ -227,19 +261,22 @@ const Engine = (() => {
   }
 
   // ── Уровень сигнала ───────────────────────────────────────
-  // HIGH только при согласии математики И архива
-  function signalLevel(evPct, prob, instab, histAgree, histStrength) {
+  // HIGH = математика + (архив ИЛИ умные деньги) + стабильность
+  function signalLevel(evPct, prob, instab, histAgree, histStrength, steamAgrees, domScore) {
     if (instab > 0.6) return 'none';
 
-    // HIGH: нужно архивное подтверждение + сильная математика
-    if (evPct >= 6 && prob >= 0.64 && instab <= 0.25 && histAgree === true && histStrength >= 0.25)
-      return 'high';
-    // MEDIUM: хорошая математика (архив может не совпадать, но не противоречить)
-    if (evPct >= 3.5 && prob >= 0.59 && instab <= 0.35 && histAgree !== false)
-      return 'medium';
-    // MEDIUM без архива — допускаем если EV очень высокий
-    if (evPct >= 5 && prob >= 0.62 && instab <= 0.3 && histAgree === null)
-      return 'medium';
+    const archiveOK = histAgree === true && histStrength >= 0.22;
+    const steamOK   = steamAgrees === true;
+    const domOK     = Math.abs(domScore || 0) >= 0.3; // явное доминирование
+
+    // HIGH: нужно как минимум два подтверждения из трёх
+    const confirmations = (archiveOK ? 1 : 0) + (steamOK ? 1 : 0) + (domOK ? 1 : 0);
+    if (evPct >= 5.5 && prob >= 0.63 && instab <= 0.25 && confirmations >= 1) return 'high';
+
+    // MEDIUM: хорошая математика, нет противоречий архива
+    if (evPct >= 3 && prob >= 0.58 && instab <= 0.38 && histAgree !== false) return 'medium';
+    if (evPct >= 4.5 && prob >= 0.61 && instab <= 0.3) return 'medium'; // без архива
+
     // LOW: слабый сигнал
     if (evPct >= 1.5 && prob >= 0.55 && instab <= 0.5) return 'low';
     return 'none';
@@ -258,7 +295,7 @@ const Engine = (() => {
   }
 
   // ── ГЛАВНАЯ ФУНКЦИЯ ───────────────────────────────────────
-  function analyze(event, bankroll = 1000, history = null) {
+  function analyze(event, bankroll = 1000, history = null, oddsMovement = null) {
     const {
       homeTeam, awayTeam, homeSets, awaySets,
       sets, currentSetNum, currentHomePts, currentAwayPts,
@@ -288,13 +325,14 @@ const Engine = (() => {
     // ── 2. Вероятность выиграть текущую партию ─────────────
     const setWinRaw = setWinProb(currentHomePts, currentAwayPts);
 
-    // ── 3. Моментум и история ─────────────────────────────
+    // ── 3. Моментум, история, доминирование ──────────────
     let avgSetWin = 0.5;
     if (doneSets.length >= 1) {
       const hw = doneSets.filter(s => s.home > s.away).length;
       avgSetWin = (hw + 0.5) / (doneSets.length + 1);
     }
     const momentumAdj = smi(doneSets) + bppi(doneSets) + rlp(doneSets);
+    const domData = pointDominance(doneSets); // доминирование по очкам
 
     // Вес истории растёт с числом сыгранных партий
     const histWeight = Math.min(0.45, doneSets.length * 0.15);
@@ -324,6 +362,25 @@ const Engine = (() => {
         trueHome = 0.5 + (trueHome - 0.5) * (1 - hist.strength * 0.45);
       }
       trueHome = Math.max(0.05, Math.min(0.95, trueHome));
+    }
+
+    // ── Стим (умные деньги) ────────────────────────────────
+    const steam = steamSignal(oddsMovement, trueHome > 0.5);
+    if (steam.agrees === true && steam.strength > 0.2) {
+      // Умные деньги на нашего игрока — усиливаем
+      const dir = trueHome > 0.5 ? 1 : -1;
+      trueHome = Math.min(0.93, trueHome + dir * steam.strength * 0.06);
+    } else if (steam.agrees === false && steam.strength > 0.3) {
+      // Умные деньги против нашего игрока — ослабляем
+      trueHome = 0.5 + (trueHome - 0.5) * (1 - steam.strength * 0.4);
+    }
+    trueHome = Math.max(0.05, Math.min(0.95, trueHome));
+
+    // Доминирование: если дом. игрок выигрывает разгромом — поддерживаем прогноз
+    if (domData.decisive && domData.score > 0.3) {
+      trueHome = Math.min(0.93, trueHome + 0.025);
+    } else if (domData.decisive && domData.score < -0.3) {
+      trueHome = Math.max(0.07, trueHome - 0.025);
     }
 
     const trueAway = 1 - trueHome;
@@ -362,7 +419,7 @@ const Engine = (() => {
     function addPred(tag, market, label, prob, mktProb, odds, evPct, ph) {
       if (!odds || odds <= 1.05) return;
       if (!isActionable(homeSets, awaySets)) return;
-      const sig = signalLevel(evPct, prob, instab, hist.agree, hist.strength);
+      const sig = signalLevel(evPct, prob, instab, hist.agree, hist.strength, steam.agrees, domData.score);
       if (sig === 'none') return;
       preds.push({
         tag, market, label, prob, odds, evPct,
@@ -433,6 +490,8 @@ const Engine = (() => {
       histAgree:   hist.agree,
       histStrength: hist.strength,
       histLoaded:  history !== null,
+      domData,
+      steamData:   { ...steam, drift: oddsMovement },
       _instab: +instab.toFixed(2),
       _setWinFinal: +setWinFinal.toFixed(3),
     };

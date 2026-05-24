@@ -104,7 +104,67 @@ const App = (() => {
   let highlightedId  = null;
   const _historyCache = {};   // { matchId: history_data }
   const _aiCache      = {};   // { matchId: ai_result }
+  const _oddsHistory  = {};   // { matchId: { initial, current } }
   let _histFetchPending = false;
+
+  // ── Odds movement tracking ────────────────────────────
+  function updateOddsHistory(rawEvents) {
+    for (const e of (rawEvents || [])) {
+      if (!e.id || !e.w1Odds || !e.w2Odds) continue;
+      const h = _oddsHistory[e.id];
+      const entry = { w1: e.w1Odds, w2: e.w2Odds };
+      if (!h) {
+        _oddsHistory[e.id] = { initial: entry, current: entry };
+      } else {
+        _oddsHistory[e.id].current = entry;
+      }
+    }
+  }
+
+  function getOddsMovement(matchId) {
+    const h = _oddsHistory[matchId];
+    if (!h || !h.initial || h.initial.w1 === h.current.w1) return null;
+    const w1Drift = +((h.initial.w1 - h.current.w1) / h.initial.w1 * 100).toFixed(1);
+    const w2Drift = +((h.initial.w2 - h.current.w2) / h.initial.w2 * 100).toFixed(1);
+    return {
+      w1Drift, w2Drift,
+      w1Initial: h.initial.w1, w2Initial: h.initial.w2,
+      w1Steam: w1Drift >= 5,   // >=5% падение = умные деньги
+      w2Steam: w2Drift >= 5,
+    };
+  }
+
+  // ── AI анализ по клику ────────────────────────────────
+  async function loadAI(matchId, btn) {
+    if (_aiCache[matchId]) { _showAI(matchId); return; }
+    btn.textContent = '⏳ Анализирую...'; btn.disabled = true;
+    const m = analyzed.find(x => x.id === matchId);
+    if (!m) return;
+    try {
+      const p = new URLSearchParams({
+        p1: m.homeTeam, p2: m.awayTeam,
+        score: `${m.homeSets}:${m.awaySets}`,
+        homeProb: m.matchWinHomeProb,
+        ev: (m.topEV || 0).toFixed(1),
+        w1: m.w1Odds || '', w2: m.w2Odds || '',
+      });
+      const res = await fetch(`/api/ai-analysis?${p}`, { cache: 'no-store' });
+      _aiCache[matchId] = await res.json();
+    } catch { /* ignore */ }
+    btn.textContent = '🤖 AI анализ'; btn.disabled = false;
+    _showAI(matchId);
+  }
+
+  function _showAI(matchId) {
+    const el = document.getElementById(`ai-${matchId}`);
+    const btn = document.getElementById(`aibtn-${matchId}`);
+    const d = _aiCache[matchId];
+    if (!el || !d) return;
+    el.style.display = 'block';
+    el.innerHTML = `<div class="ai-text">${esc(d.text || '—')}</div>
+      <div class="ai-src">🤖 ${d.source || 'AI'}</div>`;
+    if (btn) btn.style.display = 'none';
+  }
 
   function getBankroll() {
     const v = parseInt(document.getElementById('bankroll-input')?.value || '1000');
@@ -166,11 +226,13 @@ const App = (() => {
       const data = await API.getLive(currentSport);
       const bankroll = getBankroll();
 
+      if (currentSport === 'tt') updateOddsHistory(data.events);
+
       analyzed = (data.events || []).map(e => {
         if (e.sport === 'football' || e.sport === 'hockey' || e.sport === 'tennis') {
           return SportsEngine.analyze(e, bankroll);
         }
-        return Engine.analyze(e, bankroll, _historyCache[e.id] || null);
+        return Engine.analyze(e, bankroll, _historyCache[e.id] || null, getOddsMovement(e.id));
       }).filter(Boolean);
 
       // Fetch history in background after initial render
@@ -306,7 +368,7 @@ const App = (() => {
     let list = analyzed.map(m => {
       if (m.sport === 'football' || m.sport === 'hockey' || m.sport === 'tennis')
         return SportsEngine.analyze(m, bankroll);
-      return Engine.analyze(m, bankroll, _historyCache[m.id] || null);
+      return Engine.analyze(m, bankroll, _historyCache[m.id] || null, getOddsMovement(m.id));
     }).filter(Boolean);
 
     if (filter === 'value')
@@ -377,24 +439,6 @@ const App = (() => {
     </div>`;
   }
 
-  // ── AI analysis ────────────────────────────────────────
-  async function fetchAI(matchId) {
-    const m = analyzed.find(x => x.id === matchId);
-    if (!m || _aiCache[matchId]) { render(); return; }
-    const btn = document.querySelector(`[data-ai-btn="${matchId}"]`);
-    if (btn) btn.textContent = 'Анализ...';
-    try {
-      const url = `/api/ai-analysis?id=${matchId}`
-        + `&home=${encodeURIComponent(m.homeTeam)}&away=${encodeURIComponent(m.awayTeam)}`
-        + `&hs=${m.homeSets||0}&as=${m.awaySets||0}`
-        + `&chp=${m.currentHomePts||0}&cap=${m.currentAwayPts||0}`
-        + `&w1=${m.w1Odds||''}&w2=${m.w2Odds||''}`;
-      const res = await fetch(url, { cache: 'no-store' });
-      _aiCache[matchId] = await res.json();
-    } catch (e) { _aiCache[matchId] = { text: 'Ошибка AI анализа', source: '' }; }
-    render();
-  }
-
   // ── Card ──────────────────────────────────────────────
   function renderCard(m) {
     const sport = m.sport || 'tt';
@@ -438,22 +482,48 @@ const App = (() => {
       ? `<div class="current-pts">${m.currentHomePts}:${m.currentAwayPts} в ${m.currentSetNum}-й ${isTT ? 'партии' : 'сете'}</div>`
       : '';
 
-    // Odds block — W1/X/W2 or W1/W2
+    // Odds block с движением котировок
+    const mov = m.steamData?.drift || null;
+    const hasSteam = mov && (mov.w1Steam || mov.w2Steam);
     let oddsHtml = '';
     if (m.w1Odds || m.w2Odds) {
+      const mkChip = (name, val, pct, fav, drift, initVal, steam) => {
+        const driftHtml = drift != null && Math.abs(drift) >= 1.5
+          ? `<span class="o-drift ${drift > 0 ? 'drift-dn' : 'drift-up'}">${drift > 0 ? '↓' : '↑'}${Math.abs(drift)}%</span>`
+          : '';
+        const initHtml = initVal && Math.abs(initVal - val) >= 0.02
+          ? `<span class="o-init">было ${initVal.toFixed(2)}</span>` : '';
+        return `<div class="odds-chip ${fav?'odds-fav':''} ${steam?'odds-steam':''}">
+          <span class="o-name">${esc(name)}</span>
+          <span class="o-val">${val.toFixed(2)}${driftHtml}</span>
+          <span class="o-pct">${pct}%${initHtml}</span>
+          ${steam ? '<span class="o-steam-lbl">⚡стим</span>' : ''}
+        </div>`;
+      };
       const chips = [];
-      if (m.w1Odds) chips.push({ name: trunc(m.homeTeam, 11), val: m.w1Odds, pct: m.matchWinHomeProb, fav: m.matchWinHomeProb > 50 });
-      if (m.wxOdds && m.drawProb > 0) chips.push({ name: 'X', val: m.wxOdds, pct: m.drawProb, fav: false });
-      if (m.w2Odds) chips.push({ name: trunc(m.awayTeam, 11), val: m.w2Odds, pct: m.matchWinAwayProb, fav: m.matchWinAwayProb > 50 });
+      if (m.w1Odds) chips.push(mkChip(trunc(m.homeTeam,11), m.w1Odds, m.matchWinHomeProb,
+        m.matchWinHomeProb>50, mov?.w1Drift, mov?.w1Initial, mov?.w1Steam));
+      if (m.wxOdds && m.drawProb>0) chips.push(mkChip('X', m.wxOdds, m.drawProb, false, null, null, false));
+      if (m.w2Odds) chips.push(mkChip(trunc(m.awayTeam,11), m.w2Odds, m.matchWinAwayProb,
+        m.matchWinAwayProb>50, mov?.w2Drift, mov?.w2Initial, mov?.w2Steam));
       oddsHtml = `<div class="odds-strip">
-        ${chips.map(c => `<div class="odds-chip ${c.fav ? 'odds-fav' : ''}">
-          <span class="o-name">${esc(c.name)}</span>
-          <span class="o-val">${c.val.toFixed(2)}</span>
-          <span class="o-pct">${c.pct}%</span>
-        </div>`).join('')}
+        ${chips.join('')}
         ${m.leonMargin ? `<span class="odds-margin">Маржа ${m.leonMargin}%</span>` : ''}
-      </div>`;
+      </div>
+      ${hasSteam ? `<div class="steam-banner">⚡ УМНЫЕ ДЕНЬГИ — резкое движение котировок</div>` : ''}`;
     }
+
+    // Доминирование по очкам
+    const dom = m.domData;
+    const domHtml = dom && (dom.homeAvg > 0 || dom.awayAvg > 0) && m.doneSets?.length >= 1 ? `
+      <div class="dom-row">
+        <span class="dom-label">Доминирование:</span>
+        <span class="dom-val ${dom.homeAvg > dom.awayAvg + 1 ? 'dom-home' : dom.awayAvg > dom.homeAvg + 1 ? 'dom-away' : ''}">
+          ${esc(trunc(m.homeTeam,10))} ${dom.homeAvg > 0 ? dom.homeAvg+'оч/пар' : '—'}
+          <span class="dom-sep">vs</span>
+          ${esc(trunc(m.awayTeam,10))} ${dom.awayAvg > 0 ? dom.awayAvg+'оч/пар' : '—'}
+        </span>
+      </div>` : '';
 
     const smiDir = m.momentumAdj > 2 ? '▲' : m.momentumAdj < -2 ? '▼' : '–';
     const smiCls = m.momentumAdj > 2 ? 'smi-up' : m.momentumAdj < -2 ? 'smi-down' : 'smi-neu';
@@ -482,6 +552,10 @@ const App = (() => {
       <a class="btn-leon" href="${esc(m.leonUrl)}" target="_blank" rel="noopener">
         Открыть на Леоне →
       </a>` : '';
+
+    const aiHtml = isTT && m.isLive ? `
+      <button class="btn-ai" id="aibtn-${m.id}" onclick="App.loadAI('${m.id}', this)">🤖 AI анализ</button>
+      <div class="ai-result" id="ai-${m.id}" style="display:none"></div>` : '';
 
     const statusBadge = m.isLive
       ? `<span class="card-status status-live"><span class="live-dot-small"></span>LIVE</span>`
@@ -526,37 +600,19 @@ const App = (() => {
           </div>
         </div>
         ${historyRowHtml(m)}
+        ${domHtml}
         ${oddsHtml}
         <div class="preds-section">
           <div class="preds-title">📊 Прогнозы</div>
           ${predsHtml}
         </div>
         ${kellyHtml}
-        ${aiBlockHtml(m)}
+        ${aiHtml}
         ${leonBtn}
       </div>
     </div>`;
   }
 
-  function aiBlockHtml(m) {
-    if (!m.isLive || m.sport !== 'tt') return '';
-    const ai = _aiCache[m.id];
-    if (!ai) {
-      return `<button class="btn-ai" data-ai-btn="${m.id}" onclick="App.fetchAI('${m.id}')">🤖 AI анализ</button>`;
-    }
-    const src = ai.source ? `<span class="ai-source">${esc(ai.source)}</span>` : '';
-    // Parse ПРОГНОЗ line if present
-    const text = ai.text || '';
-    const prognozeMatch = text.match(/ПРОГНОЗ:\s*(.+?),\s*УВЕРЕННОСТЬ:\s*(\S+)/i);
-    const mainText = text.replace(/ПРОГНОЗ:.+/i, '').trim();
-    const prognozeHtml = prognozeMatch
-      ? `<div class="ai-verdict">🎯 ${esc(prognozeMatch[1])} — ${esc(prognozeMatch[2])}</div>` : '';
-    return `<div class="ai-block">
-      <div class="ai-header">🤖 AI анализ ${src}</div>
-      <div class="ai-text">${esc(mainText)}</div>
-      ${prognozeHtml}
-    </div>`;
-  }
 
   function predRow(p) {
     const rowCls = p.signal === 'high'  ? 'type-value'
@@ -616,5 +672,5 @@ const App = (() => {
   }
 
   document.addEventListener('DOMContentLoaded', init);
-  return { refresh, render, setSport, showBestPrediction, closeBestBanner, resetStats, fetchAI };
+  return { refresh, render, setSport, showBestPrediction, closeBestBanner, resetStats, loadAI };
 })();

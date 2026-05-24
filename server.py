@@ -6,8 +6,9 @@ import urllib.request, urllib.parse, urllib.error
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-PORT      = int(os.environ.get('PORT', 8080))
-CACHE_TTL = 20
+PORT          = int(os.environ.get('PORT', 8080))
+CACHE_TTL     = 20
+GROQ_API_KEY  = os.environ.get('GROQ_API_KEY', '')
 
 SPORTS  = ['tt', 'football', 'hockey', 'tennis']
 _caches = {s: {'events': [], 'ts': 0, 'source': ''} for s in SPORTS}
@@ -110,35 +111,50 @@ def _get_player_events_sofa(player_id):
 
 
 def _compute_player_stats(events, player_id):
-    """Compute winRate, form (last 5), avgSetMargin from events."""
-    wins = 0
-    total = 0
-    form = []
-    margins = []
-    for ev in events[:25]:
+    """Compute winRate, setWinRate, avgMargin, tightSetRate, form."""
+    wins = 0; total = 0; form = []
+    set_wins = 0; set_total = 0
+    pt_margins = []  # очки в каждом сете
+    tight_wins = 0; tight_total = 0
+
+    for ev in events[:30]:
         home_id = (ev.get('homeTeam') or {}).get('id')
         away_id = (ev.get('awayTeam') or {}).get('id')
         wc = ev.get('winnerCode')
-        if wc not in (1, 2):
-            continue
+        if wc not in (1, 2): continue
         is_home = (home_id == player_id)
         is_away = (away_id == player_id)
-        if not is_home and not is_away:
-            continue
+        if not is_home and not is_away: continue
+
         player_won = (is_home and wc == 1) or (is_away and wc == 2)
-        h_sets = (ev.get('homeScore') or {}).get('current', 0) or 0
-        a_sets = (ev.get('awayScore') or {}).get('current', 0) or 0
-        if h_sets + a_sets > 0:
-            margins.append(abs(h_sets - a_sets))
         total += 1
         wins += 1 if player_won else 0
         form.append('W' if player_won else 'L')
+
+        # Per-set analysis (period1..period5)
+        hs = ev.get('homeScore') or {}
+        as_ = ev.get('awayScore') or {}
+        for period in ('period1', 'period2', 'period3', 'period4', 'period5'):
+            hp = hs.get(period); ap = as_.get(period)
+            if hp is None or ap is None: break
+            if hp + ap == 0: break
+            set_total += 1
+            p_won = (is_home and hp > ap) or (is_away and ap > hp)
+            if p_won: set_wins += 1
+            margin = abs(hp - ap)
+            pt_margins.append(margin)
+            if margin <= 2:
+                tight_total += 1
+                if p_won: tight_wins += 1
+
     return {
         'winRate':      round(wins / total, 3) if total else 0.5,
+        'setWinRate':   round(set_wins / set_total, 3) if set_total >= 3 else None,
+        'avgMargin':    round(sum(pt_margins) / len(pt_margins), 1) if pt_margins else None,
+        'tightSetRate': round(tight_wins / tight_total, 3) if tight_total >= 3 else None,
         'matches':      total,
         'wins':         wins,
         'form':         form[:5],
-        'avgSetMargin': round(sum(margins) / len(margins), 2) if margins else 0.0,
     }
 
 
@@ -784,6 +800,111 @@ def get_sport_data(sport):
     return new_cache
 
 
+# ── Groq AI Analysis ─────────────────────────────────────────────────────────
+
+_AI_CACHE = {}
+AI_TTL    = 120  # 2 min — матч живой, ситуация меняется
+
+
+def groq_chat(prompt, max_tokens=320):
+    """Вызов Groq API (Llama-3.3-70b-versatile)."""
+    url  = 'https://api.groq.com/openai/v1/chat/completions'
+    body = json.dumps({
+        'model':      'llama-3.3-70b-versatile',
+        'messages':   [{'role': 'user', 'content': prompt}],
+        'max_tokens': max_tokens,
+        'temperature': 0.35,
+    }).encode('utf-8')
+    req = urllib.request.Request(url, data=body, headers={
+        'Authorization': f'Bearer {GROQ_API_KEY}',
+        'Content-Type':  'application/json',
+    }, method='POST')
+    with urllib.request.urlopen(req, context=SSL_CTX, timeout=20) as r:
+        return json.loads(r.read())['choices'][0]['message']['content'].strip()
+
+
+def build_tt_prompt(p1, p2, score, homeProb, ev, w1, w2, stats):
+    p1s = stats.get('p1') or {}
+    p2s = stats.get('p2') or {}
+    h2h = stats.get('h2h') or {}
+
+    def fmt_player(name, st):
+        if not st or st.get('matches', 0) < 3:
+            return f'{name}: данных нет'
+        wr  = f"{st['winRate']*100:.0f}%"
+        frm = ''.join(st.get('form', []))
+        swr = f" / сеты {st['setWinRate']*100:.0f}%" if st.get('setWinRate') else ''
+        mgn = f" / ср.разрыв {st['avgMargin']:.1f}оч" if st.get('avgMargin') else ''
+        return f'{name}: побед {wr}{swr}{mgn}, форма {frm}'
+
+    h2h_str = f"{h2h.get('p1Wins',0)}-{h2h.get('p2Wins',0)} из {h2h.get('total',0)}" \
+              if h2h and h2h.get('total', 0) >= 2 else 'нет данных'
+
+    return f"""Ты эксперт-аналитик ставок на настольный теннис. Проведи краткий анализ матча.
+
+Матч: {p1} vs {p2}
+Счёт по партиям: {score}
+Котировки Леон: {p1} @ {w1 or '—'}, {p2} @ {w2 or '—'}
+
+Статистика из архива:
+- {fmt_player(p1, p1s)}
+- {fmt_player(p2, p2s)}
+- H2H ({p1} vs {p2}): {h2h_str}
+
+Математическая модель: {p1} = {homeProb}%, EV ставки = {ev}%
+
+Напиши КРАТКИЙ анализ (2–3 предложения) на русском. Выдели ключевой фактор.
+Последняя строка ОБЯЗАТЕЛЬНО: ПРОГНОЗ: [имя победителя], УВЕРЕННОСТЬ: [ВЫСОКАЯ/СРЕДНЯЯ/НИЗКАЯ]"""
+
+
+def _rule_analysis(p1, p2, homeProb, ev, stats):
+    """Анализ без AI (запасной вариант)."""
+    p1s = stats.get('p1') or {}
+    p2s = stats.get('p2') or {}
+    h2h = stats.get('h2h') or {}
+    parts = []
+    if p1s and p2s and p1s.get('matches', 0) >= 5 and p2s.get('matches', 0) >= 5:
+        d = p1s['winRate'] - p2s['winRate']
+        fav = p1 if d > 0 else p2
+        if abs(d) >= 0.08:
+            parts.append(f"По статистике побед фаворит — {fav} ({max(p1s['winRate'],p2s['winRate'])*100:.0f}% vs {min(p1s['winRate'],p2s['winRate'])*100:.0f}%).")
+    if h2h and h2h.get('total', 0) >= 3:
+        fav = p1 if h2h['p1Wins'] > h2h['p2Wins'] else p2
+        parts.append(f"В личных встречах лидирует {fav} ({h2h['p1Wins']}:{h2h['p2Wins']}).")
+    fav_name = p1 if homeProb > 50 else p2
+    conf = 'ВЫСОКАЯ' if abs(homeProb-50) > 15 and ev > 4 else 'СРЕДНЯЯ' if abs(homeProb-50) > 8 else 'НИЗКАЯ'
+    if not parts:
+        parts.append(f"Математическая модель даёт {homeProb}% вероятности победы {fav_name} (EV {ev}%).")
+    parts.append(f"ПРОГНОЗ: {fav_name}, УВЕРЕННОСТЬ: {conf}")
+    return ' '.join(parts)
+
+
+def get_ai_analysis(p1, p2, score, homeProb, ev, w1, w2, stats):
+    key = f'{p1}||{p2}||{score}'
+    now = time.time()
+    with _PLAYER_LOCK:
+        c = _AI_CACHE.get(key)
+        if c and now - c['ts'] < AI_TTL:
+            return c['data']
+
+    if GROQ_API_KEY:
+        try:
+            prompt = build_tt_prompt(p1, p2, score, homeProb, ev, w1, w2, stats)
+            text   = groq_chat(prompt)
+            result = {'text': text, 'source': 'Llama-3.3-70b (Groq)', 'ok': True}
+        except Exception as ex:
+            print(f'[groq] {ex}')
+            result = {'text': _rule_analysis(p1, p2, homeProb, ev, stats),
+                      'source': 'Правила (Groq недоступен)', 'ok': True}
+    else:
+        result = {'text': _rule_analysis(p1, p2, homeProb, ev, stats),
+                  'source': 'Правила', 'ok': True}
+
+    with _PLAYER_LOCK:
+        _AI_CACHE[key] = {'data': result, 'ts': now}
+    return result
+
+
 # ── HTTP server ───────────────────────────────────────────────────────────────
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -798,6 +919,8 @@ class Handler(SimpleHTTPRequestHandler):
             self._api()
         elif self.path.startswith('/api/player-stats'):
             self._player_stats_api()
+        elif self.path.startswith('/api/ai-analysis'):
+            self._ai_api()
         elif self.path.startswith('/api/ai-analysis'):
             self._ai_api()
         elif self.path == '/health':
@@ -831,6 +954,24 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-cache')
         self.end_headers()
         self.wfile.write(body)
+
+    def _ai_api(self):
+        try:
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            g  = lambda k, d='': qs.get(k, [d])[0].strip()
+            p1 = g('p1'); p2 = g('p2')
+            if not p1 or not p2:
+                self._json_resp(400, {'error': 'p1 and p2 required'}); return
+            score    = g('score', '0:0')
+            homeProb = g('homeProb', '50')
+            ev       = g('ev', '0')
+            w1       = g('w1'); w2 = g('w2')
+            # Fetch player stats (cached)
+            stats = get_player_stats(p1, p2)
+            result = get_ai_analysis(p1, p2, score, homeProb, ev, w1, w2, stats)
+            self._json_resp(200, result)
+        except Exception as ex:
+            self._json_resp(500, {'error': str(ex), 'text': 'Ошибка AI', 'source': ''})
 
     def _player_stats_api(self):
         try:

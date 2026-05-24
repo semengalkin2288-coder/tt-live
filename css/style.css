@@ -288,6 +288,35 @@ header {
   transition: width 0.5s;
 }
 
+/* Odds movement / steam */
+.o-drift   { font-size: 0.62rem; font-weight: 700; margin-left: 3px; vertical-align: super; }
+.drift-dn  { color: #f59e0b; }
+.drift-up  { color: var(--text3); }
+.o-init    { font-size: 0.58rem; color: var(--text3); display: block; }
+.o-steam-lbl { font-size: 0.6rem; color: #f59e0b; font-weight: 700; display: block; }
+.odds-steam { border-color: rgba(245,158,11,0.5) !important; background: rgba(245,158,11,0.07) !important; }
+.steam-banner {
+  background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.4);
+  color: #fbbf24; border-radius: 6px; padding: 0.3rem 0.7rem;
+  font-size: 0.73rem; font-weight: 700; margin-bottom: 0.6rem; text-align: center;
+}
+/* Point dominance row */
+.dom-row   { font-size: 0.7rem; color: var(--text2); margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.4rem; }
+.dom-label { color: var(--text3); }
+.dom-home  { color: var(--green); font-weight: 600; }
+.dom-away  { color: var(--red); font-weight: 600; }
+.dom-sep   { color: var(--text3); margin: 0 0.25rem; }
+/* AI */
+.btn-ai  { background: rgba(56,189,248,0.1); border: 1px solid rgba(56,189,248,0.3); color: var(--blue);
+           border-radius: 7px; padding: 0.35rem 0.8rem; font-size: 0.75rem; cursor: pointer;
+           margin-bottom: 0.5rem; width: 100%; transition: background 0.2s; }
+.btn-ai:hover { background: rgba(56,189,248,0.2); }
+.btn-ai:disabled { opacity: 0.5; cursor: not-allowed; }
+.ai-result { background: rgba(56,189,248,0.05); border: 1px solid rgba(56,189,248,0.2);
+             border-radius: 7px; padding: 0.5rem 0.7rem; margin-bottom: 0.5rem; }
+.ai-text   { font-size: 0.75rem; color: var(--text); line-height: 1.5; }
+.ai-src    { font-size: 0.62rem; color: var(--text3); margin-top: 0.25rem; }
+
 /* History / player stats block */
 .hist-row {
   font-size: 0.72rem; padding: 0.3rem 0.6rem;
