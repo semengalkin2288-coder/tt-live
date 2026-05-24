@@ -292,6 +292,7 @@ const App = (() => {
       const meta = SPORT_META[currentSport] || SPORT_META.tt;
       setStatus(liveCount > 0 ? `${liveCount} лайв матчей` : `Нет лайв матчей`);
       render();
+      if (_ladder.active) _renderLadder();
     } catch (e) {
       console.error(e);
       const isConn = e.message.includes('fetch') || e.message.includes('Failed');
@@ -391,6 +392,254 @@ const App = (() => {
     if (!confirm('Сбросить статистику?')) return;
     Stats.reset(currentSport);
     updateStatsBar(Stats.get(currentSport));
+  }
+
+  // ── Лесенка ───────────────────────────────────────────
+  const _ladder = { active: false, balance: 0, target: 0, start: 0, history: [], currentPick: null };
+
+  function openLadder() {
+    const panel = document.getElementById('ladder-panel');
+    if (!panel) return;
+    if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+    panel.style.display = 'block';
+    if (_ladder.active) _renderLadder();
+    else panel.innerHTML = _ladderSetupHtml();
+  }
+
+  function _ladderSetupHtml() {
+    const cur = getBankroll();
+    return `<div class="ladder-inner">
+      <div class="ladder-header">
+        <span class="ladder-title">🪜 Лесенка</span>
+        <button class="ladder-close" onclick="App.closeLadder()">✕</button>
+      </div>
+      <div class="ladder-setup">
+        <p class="lsetup-desc">Один прогноз за раз. Даю самый уверенный — ты сообщаешь результат — идём дальше.</p>
+        <div class="lset-row">
+          <label class="lset-lbl">Стартовый баланс</label>
+          <div class="lset-inp-wrap">
+            <input type="number" id="ld-balance" value="${cur}" min="100" step="50" class="lset-inp" />
+            <span class="lset-cur">₽</span>
+          </div>
+        </div>
+        <div class="lset-row">
+          <label class="lset-lbl">Цель</label>
+          <div class="lset-inp-wrap">
+            <input type="number" id="ld-target" value="${cur * 3}" min="200" step="100" class="lset-inp" />
+            <span class="lset-cur">₽</span>
+          </div>
+        </div>
+        <button class="btn-ld-start" onclick="App.startLadder()">🚀 Запустить лесенку</button>
+      </div>
+    </div>`;
+  }
+
+  function startLadder() {
+    const bal = parseInt(document.getElementById('ld-balance')?.value);
+    const tgt = parseInt(document.getElementById('ld-target')?.value);
+    if (!bal || !tgt || isNaN(bal) || isNaN(tgt)) return;
+    if (tgt <= bal) { alert('Цель должна быть больше баланса'); return; }
+    _ladder.active  = true;
+    _ladder.balance = bal;
+    _ladder.target  = tgt;
+    _ladder.start   = bal;
+    _ladder.history = [];
+    _ladder.currentPick = null;
+    _saveLadder();
+    _renderLadder();
+  }
+
+  function _findBestForLadder() {
+    // Keep current pick if the match is still live and signal holds
+    if (_ladder.currentPick) {
+      const cp = _ladder.currentPick;
+      const m  = analyzed.find(x => x.id === cp.match.id && x.isLive);
+      if (m) {
+        const p = m.predictions.find(x => x.tag === cp.pred.tag && x.label === cp.pred.label);
+        if (p && (p.signal === 'high' || p.signal === 'medium')) {
+          return { pred: p, match: m, stake: cp.stake };
+        }
+      }
+    }
+    // Find the absolute best: HIGH first, then MEDIUM
+    let best = null, bestScore = -Infinity, bestMatch = null;
+    for (const sig of ['high', 'medium']) {
+      for (const m of analyzed) {
+        if (!m.isLive) continue;
+        for (const p of m.predictions) {
+          if (p.signal !== sig) continue;
+          // Score: weight EV, prob, confidence
+          const score = p.evPct * 0.45 + (p.prob * 100) * 0.35 + m.topConf * 0.20;
+          if (score > bestScore) { bestScore = score; best = p; bestMatch = m; }
+        }
+      }
+      if (best) break; // prefer high over medium
+    }
+    if (!best) return null;
+
+    // Ladder stake: fractional Kelly capped at 25% of balance
+    const b = best.odds - 1;
+    const q = 1 - best.prob;
+    const kellyRaw = Math.max(0, (b * best.prob - q) / b);
+    let stake = kellyRaw * 0.30 * _ladder.balance;
+    stake = Math.min(stake, _ladder.balance * 0.25);
+    stake = Math.max(50, Math.round(stake / 10) * 10);
+    return { pred: best, match: bestMatch, stake };
+  }
+
+  function _renderLadder() {
+    const panel = document.getElementById('ladder-panel');
+    if (!panel || !_ladder.active) return;
+
+    const wins    = _ladder.history.filter(h => h.won).length;
+    const losses  = _ladder.history.filter(h => !h.won).length;
+    const step    = _ladder.history.length + 1;
+    const progPct = Math.min(100, Math.round(_ladder.balance / _ladder.target * 100));
+
+    if (_ladder.balance <= 0) { panel.innerHTML = _ladderBustedHtml(wins, losses); return; }
+    if (_ladder.balance >= _ladder.target) { panel.innerHTML = _ladderDoneHtml(wins, losses); return; }
+
+    _ladder.currentPick = _findBestForLadder();
+    const pick = _ladder.currentPick;
+
+    panel.innerHTML = `<div class="ladder-inner">
+      <div class="ladder-header">
+        <span class="ladder-title">🪜 Лесенка — шаг ${step}</span>
+        <button class="ladder-close" onclick="App.closeLadder()">✕</button>
+      </div>
+      <div class="ladder-progress">
+        <div class="lp-amounts">
+          <span class="lp-cur">${_ladder.balance.toLocaleString('ru')}₽</span>
+          <span class="lp-of">из</span>
+          <span class="lp-tgt">${_ladder.target.toLocaleString('ru')}₽</span>
+          <span class="lp-left">осталось ${(_ladder.target - _ladder.balance).toLocaleString('ru')}₽</span>
+        </div>
+        <div class="lp-bar-wrap"><div class="lp-bar" style="width:${progPct}%"></div></div>
+        <div class="lp-stats">✓ ${wins} побед · ✗ ${losses} поражений</div>
+      </div>
+      ${pick ? _ladderPickHtml(pick) : `<div class="ladder-wait">
+        <div class="lw-icon">⏳</div>
+        <div class="lw-msg">Нет уверенных прогнозов прямо сейчас.<br>Обновление через <span id="ld-cd">${countdownVal}</span>с</div>
+      </div>`}
+    </div>`;
+  }
+
+  function _ladderPickHtml(pick) {
+    const p = pick.pred, m = pick.match;
+    const sigCls  = p.signal === 'high' ? 'lsig-high' : 'lsig-med';
+    const sigTxt  = p.signal === 'high' ? '🎯 HIGH VALUE' : '📊 VALUE';
+    const evSign  = p.evPct > 0 ? '+' : '';
+    const profit  = Math.round(pick.stake * (p.odds - 1));
+    const newBal  = (_ladder.balance + profit).toLocaleString('ru');
+    const conf    = m.topConf;
+    return `<div class="ladder-pick">
+      <div class="lpick-sig ${sigCls}">${sigTxt} · уверенность ${conf}%</div>
+      <div class="lpick-match">${esc(m.homeTeam)} <span class="lpick-vs">vs</span> ${esc(m.awayTeam)}</div>
+      <div class="lpick-tour">${esc(m.tournament)}</div>
+      <div class="lpick-bet">
+        <div>
+          <span class="lpick-market">${esc(p.market)}</span>
+          <span class="lpick-label">${esc(p.label)}</span>
+        </div>
+        <div class="lpick-nums">
+          <span class="lpick-odds">@ ${p.odds.toFixed(2)}</span>
+          <span class="lpick-prob">${(p.prob * 100).toFixed(0)}% вер.</span>
+          <span class="lpick-ev">${evSign}${p.evPct.toFixed(1)}% EV</span>
+        </div>
+      </div>
+      <div class="lpick-stake-row">
+        <span class="lpick-slbl">Ставка:</span>
+        <span class="lpick-sval">${pick.stake}₽</span>
+        <span class="lpick-pot">→ при победе ${newBal}₽</span>
+      </div>
+      <div class="lpick-actions">
+        <button class="btn-ld-win" onclick="App.ladderSettle(true)">✅ Зашло +${profit}₽</button>
+        <button class="btn-ld-lose" onclick="App.ladderSettle(false)">❌ Не зашло −${pick.stake}₽</button>
+      </div>
+    </div>`;
+  }
+
+  function _ladderDoneHtml(wins, losses) {
+    const mult = (_ladder.balance / _ladder.start).toFixed(2);
+    return `<div class="ladder-inner ladder-celebrate">
+      <div class="ladder-header">
+        <span class="ladder-title">🪜 Лесенка</span>
+        <button class="ladder-close" onclick="App.closeLadder()">✕</button>
+      </div>
+      <div class="ld-result">
+        <div class="ld-icon">🏆</div>
+        <div class="ld-title ld-win-title">Цель достигнута!</div>
+        <div class="ld-bal">${_ladder.balance.toLocaleString('ru')}₽</div>
+        <div class="ld-meta">×${mult} от старта · ${_ladder.history.length} шагов · ${wins} побед · ${losses} поражений</div>
+        <button class="btn-ld-reset" onclick="App.resetLadder()">Новая лесенка</button>
+      </div>
+    </div>`;
+  }
+
+  function _ladderBustedHtml(wins, losses) {
+    return `<div class="ladder-inner">
+      <div class="ladder-header">
+        <span class="ladder-title">🪜 Лесенка</span>
+        <button class="ladder-close" onclick="App.closeLadder()">✕</button>
+      </div>
+      <div class="ld-result">
+        <div class="ld-icon">💔</div>
+        <div class="ld-title ld-lose-title">Баланс исчерпан</div>
+        <div class="ld-meta">${_ladder.history.length} шагов · ${wins} побед · ${losses} поражений</div>
+        <button class="btn-ld-reset" onclick="App.resetLadder()">Начать заново</button>
+      </div>
+    </div>`;
+  }
+
+  function ladderSettle(won) {
+    const pick = _ladder.currentPick;
+    if (!pick) return;
+    const profit = won ? Math.round(pick.stake * (pick.pred.odds - 1)) : -pick.stake;
+    _ladder.history.push({
+      label:         pick.pred.label,
+      match:         `${pick.match.homeTeam} vs ${pick.match.awayTeam}`,
+      stake:         pick.stake, odds: pick.pred.odds, won, profit,
+      balanceBefore: _ladder.balance,
+      balanceAfter:  Math.max(0, _ladder.balance + profit),
+      ts:            Date.now(),
+    });
+    _ladder.balance     = Math.max(0, _ladder.balance + profit);
+    _ladder.currentPick = null;
+    _saveLadder();
+    _renderLadder();
+  }
+
+  function closeLadder() {
+    const panel = document.getElementById('ladder-panel');
+    if (panel) panel.style.display = 'none';
+  }
+
+  function resetLadder() {
+    _ladder.active = false; _ladder.balance = 0; _ladder.target = 0;
+    _ladder.start  = 0;    _ladder.history = []; _ladder.currentPick = null;
+    try { localStorage.removeItem('ladder_state'); } catch {}
+    closeLadder();
+  }
+
+  function _saveLadder() {
+    try {
+      localStorage.setItem('ladder_state', JSON.stringify({
+        active: _ladder.active, balance: _ladder.balance,
+        target: _ladder.target, start: _ladder.start, history: _ladder.history,
+      }));
+    } catch {}
+  }
+
+  function _loadLadder() {
+    try {
+      const s = localStorage.getItem('ladder_state');
+      if (!s) return;
+      Object.assign(_ladder, JSON.parse(s));
+      if (_ladder.active) {
+        const panel = document.getElementById('ladder-panel');
+        if (panel) { panel.style.display = 'block'; _renderLadder(); }
+      }
+    } catch {}
   }
 
   // ── Render ────────────────────────────────────────────
@@ -735,9 +984,11 @@ const App = (() => {
   function init() {
     document.getElementById('bankroll-input')?.addEventListener('change', render);
     updateStatsBar(Stats.get(currentSport));
+    _loadLadder();
     refresh();
   }
 
   document.addEventListener('DOMContentLoaded', init);
-  return { refresh, render, setSport, showBestPrediction, closeBestBanner, resetStats, loadAI };
+  return { refresh, render, setSport, showBestPrediction, closeBestBanner, resetStats, loadAI,
+           openLadder, startLadder, ladderSettle, closeLadder, resetLadder };
 })();

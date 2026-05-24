@@ -632,3 +632,136 @@ header {
 }
 .elo-sep  { color: var(--text3); }
 .elo-prob { color: var(--blue); font-size: 0.7rem; }
+
+/* ====================================================== */
+/* LADDER (Лесенка)                                       */
+/* ====================================================== */
+
+.btn-ladder {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  color: #000; border: none; border-radius: 7px;
+  font-size: 0.78rem; font-weight: 700; cursor: pointer;
+  padding: 0.38rem 0.85rem; transition: opacity 0.18s;
+}
+.btn-ladder:hover { opacity: 0.82; }
+
+#ladder-panel {
+  margin: 0 1rem 0.85rem;
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+
+.ladder-inner { padding: 1rem 1.25rem; }
+
+.ladder-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 0.85rem;
+}
+.ladder-title { font-size: 0.95rem; font-weight: 700; color: var(--yellow); }
+.ladder-close {
+  background: none; border: none; color: var(--text3);
+  font-size: 1.1rem; cursor: pointer; transition: color 0.18s; line-height: 1;
+}
+.ladder-close:hover { color: var(--text); }
+
+/* ── Setup ── */
+.lsetup-desc { font-size: 0.78rem; color: var(--text2); margin-bottom: 0.85rem; line-height: 1.4; }
+.lset-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.6rem; }
+.lset-lbl { font-size: 0.8rem; color: var(--text2); }
+.lset-inp-wrap { display: flex; align-items: center; gap: 5px; }
+.lset-inp {
+  width: 115px; padding: 0.3rem 0.55rem;
+  background: var(--bg3); border: 1px solid var(--border2);
+  border-radius: 6px; color: var(--text); font-size: 0.88rem; text-align: right;
+}
+.lset-inp:focus { outline: none; border-color: var(--yellow); }
+.lset-cur { color: var(--text3); font-size: 0.8rem; }
+.btn-ld-start {
+  width: 100%; margin-top: 0.8rem;
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  color: #000; border: none; border-radius: 8px;
+  font-size: 0.9rem; font-weight: 700; cursor: pointer;
+  padding: 0.6rem 1rem; transition: opacity 0.18s;
+}
+.btn-ld-start:hover { opacity: 0.85; }
+
+/* ── Progress bar ── */
+.ladder-progress { margin-bottom: 0.85rem; }
+.lp-amounts { display: flex; gap: 7px; align-items: baseline; margin-bottom: 6px; flex-wrap: wrap; }
+.lp-cur  { font-size: 1.15rem; font-weight: 800; color: var(--green); }
+.lp-of   { font-size: 0.72rem; color: var(--text3); }
+.lp-tgt  { font-size: 0.92rem; font-weight: 600; color: var(--text); }
+.lp-left { font-size: 0.7rem; color: var(--text3); margin-left: 2px; }
+.lp-bar-wrap {
+  background: var(--bg3); border-radius: 6px; height: 7px;
+  overflow: hidden; margin-bottom: 5px;
+}
+.lp-bar {
+  background: linear-gradient(90deg, var(--green), #16a34a);
+  height: 100%; border-radius: 6px; transition: width 0.65s ease;
+}
+.lp-stats { font-size: 0.71rem; color: var(--text3); }
+
+/* ── Pick card ── */
+.ladder-pick {
+  background: var(--bg3); border: 1px solid var(--border2);
+  border-radius: 10px; padding: 0.9rem 1rem; margin-top: 0.35rem;
+}
+.lpick-sig {
+  font-size: 0.73rem; font-weight: 700; border-radius: 5px;
+  display: inline-block; padding: 2px 9px; margin-bottom: 0.6rem;
+}
+.lsig-high { background: var(--gbg); color: var(--green); border: 1px solid var(--gbr); }
+.lsig-med  { background: var(--ybg); color: var(--yellow); border: 1px solid var(--ybr); }
+
+.lpick-match { font-size: 0.97rem; font-weight: 700; color: var(--text); margin-bottom: 1px; }
+.lpick-vs    { color: var(--text3); font-weight: 400; }
+.lpick-tour  { font-size: 0.71rem; color: var(--text3); margin-bottom: 0.65rem; }
+
+.lpick-bet   { margin-bottom: 0.5rem; }
+.lpick-market { font-size: 0.7rem; color: var(--text3); display: block; }
+.lpick-label  { font-size: 0.9rem; font-weight: 600; color: var(--text); }
+.lpick-nums   { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+.lpick-odds   { font-size: 0.82rem; color: var(--blue); font-weight: 600; }
+.lpick-prob   { font-size: 0.78rem; color: var(--text2); }
+.lpick-ev     { font-size: 0.78rem; color: var(--green); }
+
+.lpick-stake-row {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 0.5rem 0; border-top: 1px solid var(--border);
+  margin: 0.65rem 0 0.7rem;
+}
+.lpick-slbl { font-size: 0.78rem; color: var(--text3); }
+.lpick-sval { font-size: 1.1rem; font-weight: 800; color: var(--yellow); }
+.lpick-pot  { font-size: 0.72rem; color: var(--text3); }
+
+.lpick-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+.btn-ld-win, .btn-ld-lose {
+  border: none; border-radius: 9px; font-size: 0.83rem; font-weight: 700;
+  cursor: pointer; padding: 0.65rem 0.5rem; transition: opacity 0.18s;
+}
+.btn-ld-win  { background: var(--gbg); color: var(--green); border: 1px solid var(--gbr); }
+.btn-ld-lose { background: var(--rbg); color: var(--red);   border: 1px solid var(--rbr); }
+.btn-ld-win:hover, .btn-ld-lose:hover { opacity: 0.72; }
+
+/* ── Wait state ── */
+.ladder-wait { text-align: center; padding: 1.5rem 0.5rem; }
+.lw-icon { font-size: 2rem; margin-bottom: 0.5rem; }
+.lw-msg  { font-size: 0.8rem; color: var(--text2); line-height: 1.5; }
+
+/* ── Done / Bust ── */
+.ld-result { text-align: center; padding: 0.85rem 0; }
+.ld-icon   { font-size: 2.6rem; margin-bottom: 0.45rem; }
+.ld-title  { font-size: 1.05rem; font-weight: 700; margin-bottom: 0.3rem; }
+.ld-win-title  { color: var(--green); }
+.ld-lose-title { color: var(--red); }
+.ld-bal  { font-size: 2rem; font-weight: 800; color: var(--yellow); margin-bottom: 0.3rem; }
+.ld-meta { font-size: 0.76rem; color: var(--text3); margin-bottom: 1rem; }
+.btn-ld-reset {
+  background: var(--bg3); border: 1px solid var(--border2); color: var(--text);
+  border-radius: 8px; font-size: 0.83rem; cursor: pointer;
+  padding: 0.5rem 1.4rem; transition: border-color 0.18s;
+}
+.btn-ld-reset:hover { border-color: var(--yellow); }
