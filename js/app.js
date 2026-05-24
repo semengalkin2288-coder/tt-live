@@ -395,7 +395,7 @@ const App = (() => {
   }
 
   // ── Лесенка ───────────────────────────────────────────
-  const _ladder = { active: false, balance: 0, target: 0, start: 0, history: [], currentPick: null };
+  const _ladder = { active: false, balance: 0, target: 0, start: 0, history: [], currentPick: null, skipMatchId: null };
 
   function openLadder() {
     const panel = document.getElementById('ladder-panel');
@@ -461,30 +461,44 @@ const App = (() => {
         }
       }
     }
-    // Find the absolute best: HIGH first, then MEDIUM
-    let best = null, bestScore = -Infinity, bestMatch = null;
-    for (const sig of ['high', 'medium']) {
-      for (const m of analyzed) {
-        if (!m.isLive) continue;
-        for (const p of m.predictions) {
-          if (p.signal !== sig) continue;
-          // Score: weight EV, prob, confidence
-          const score = p.evPct * 0.45 + (p.prob * 100) * 0.35 + m.topConf * 0.20;
-          if (score > bestScore) { bestScore = score; best = p; bestMatch = m; }
-        }
-      }
-      if (best) break; // prefer high over medium
-    }
-    if (!best) return null;
 
-    // Ladder stake: fractional Kelly capped at 25% of balance
-    const b = best.odds - 1;
-    const q = 1 - best.prob;
-    const kellyRaw = Math.max(0, (b * best.prob - q) / b);
+    // Scan for best pick, excluding one match if requested
+    function _scan(excludeId) {
+      let best = null, bestScore = -Infinity, bestMatch = null;
+      for (const sig of ['high', 'medium']) {
+        for (const m of analyzed) {
+          if (!m.isLive) continue;
+          if (excludeId && m.id === excludeId) continue;
+          for (const p of m.predictions) {
+            if (p.signal !== sig) continue;
+            const score = p.evPct * 0.45 + (p.prob * 100) * 0.35 + m.topConf * 0.20;
+            if (score > bestScore) { bestScore = score; best = p; bestMatch = m; }
+          }
+        }
+        if (best) break;
+      }
+      return best ? { pred: best, match: bestMatch } : null;
+    }
+
+    // Skip the last-settled/skipped match; fall back to including it if nothing else exists
+    let found = _scan(_ladder.skipMatchId);
+    if (!found && _ladder.skipMatchId) found = _scan(null);
+    if (!found) return null;
+
+    const b = found.pred.odds - 1;
+    const q = 1 - found.pred.prob;
+    const kellyRaw = Math.max(0, (b * found.pred.prob - q) / b);
     let stake = kellyRaw * 0.30 * _ladder.balance;
     stake = Math.min(stake, _ladder.balance * 0.25);
     stake = Math.max(50, Math.round(stake / 10) * 10);
-    return { pred: best, match: bestMatch, stake };
+    return { pred: found.pred, match: found.match, stake };
+  }
+
+  function changeLadderPick() {
+    if (!_ladder.currentPick) return;
+    _ladder.skipMatchId = _ladder.currentPick.match.id;
+    _ladder.currentPick = null;
+    _renderLadder();
   }
 
   function _renderLadder() {
@@ -556,6 +570,10 @@ const App = (() => {
         <button class="btn-ld-win" onclick="App.ladderSettle(true)">✅ Зашло +${profit}₽</button>
         <button class="btn-ld-lose" onclick="App.ladderSettle(false)">❌ Не зашло −${pick.stake}₽</button>
       </div>
+      <div class="lpick-change-wrap">
+        <button class="btn-ld-change" onclick="App.changeLadderPick()">🔄 Поменять прогноз</button>
+        <span class="lpick-change-hint">если матч недоступен или не хочешь ставить</span>
+      </div>
     </div>`;
   }
 
@@ -603,6 +621,7 @@ const App = (() => {
       balanceAfter:  Math.max(0, _ladder.balance + profit),
       ts:            Date.now(),
     });
+    _ladder.skipMatchId = pick.match.id; // don't immediately re-pick same match
     _ladder.balance     = Math.max(0, _ladder.balance + profit);
     _ladder.currentPick = null;
     _saveLadder();
@@ -990,5 +1009,5 @@ const App = (() => {
 
   document.addEventListener('DOMContentLoaded', init);
   return { refresh, render, setSport, showBestPrediction, closeBestBanner, resetStats, loadAI,
-           openLadder, startLadder, ladderSettle, closeLadder, resetLadder };
+           openLadder, startLadder, ladderSettle, changeLadderPick, closeLadder, resetLadder };
 })();

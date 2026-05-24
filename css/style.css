@@ -765,3 +765,17 @@ header {
   padding: 0.5rem 1.4rem; transition: border-color 0.18s;
 }
 .btn-ld-reset:hover { border-color: var(--yellow); }
+
+.lpick-change-wrap {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 8px; padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.btn-ld-change {
+  background: none; border: 1px solid var(--border2); color: var(--text2);
+  border-radius: 7px; font-size: 0.76rem; cursor: pointer;
+  padding: 0.35rem 0.75rem; transition: border-color 0.18s, color 0.18s;
+  white-space: nowrap;
+}
+.btn-ld-change:hover { border-color: var(--blue); color: var(--blue); }
+.lpick-change-hint { font-size: 0.68rem; color: var(--text3); }

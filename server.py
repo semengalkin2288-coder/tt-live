@@ -893,12 +893,20 @@ def get_ai_analysis(p1, p2, score, homeProb, ev, w1, w2, stats):
             text   = groq_chat(prompt)
             result = {'text': text, 'source': 'Llama-3.3-70b (Groq)', 'ok': True}
         except Exception as ex:
-            print(f'[groq] {ex}')
-            result = {'text': _rule_analysis(p1, p2, homeProb, ev, stats),
-                      'source': 'Правила (Groq недоступен)', 'ok': True}
+            print(f'[groq-error] {type(ex).__name__}: {ex}')
+            try:
+                rule_text = _rule_analysis(p1, p2, homeProb, ev, stats)
+            except Exception as rex:
+                print(f'[rule-error] {rex}')
+                rule_text = f'Математическая модель: {p1} — {homeProb:.0f}% вероятность победы.'
+            result = {'text': rule_text, 'source': 'Правила (Groq недоступен)', 'ok': True}
     else:
-        result = {'text': _rule_analysis(p1, p2, homeProb, ev, stats),
-                  'source': 'Правила', 'ok': True}
+        try:
+            rule_text = _rule_analysis(p1, p2, homeProb, ev, stats)
+        except Exception as rex:
+            print(f'[rule-error] {rex}')
+            rule_text = f'Математическая модель: {p1} — {homeProb:.0f}% вероятность победы.'
+        result = {'text': rule_text, 'source': 'Правила', 'ok': True}
 
     with _PLAYER_LOCK:
         _AI_CACHE[key] = {'data': result, 'ts': now}
@@ -963,8 +971,8 @@ class Handler(SimpleHTTPRequestHandler):
             if not p1 or not p2:
                 self._json_resp(400, {'error': 'p1 and p2 required'}); return
             score    = g('score', '0:0')
-            homeProb = g('homeProb', '50')
-            ev       = g('ev', '0')
+            homeProb = float(g('homeProb', '50'))
+            ev       = float(g('ev', '0'))
             w1       = g('w1'); w2 = g('w2')
             # Local stats first (fast), fallback to sofascore
             stats = get_local_player_stats(p1, p2)
