@@ -53,7 +53,7 @@ const Stats = (() => {
         d.pending[key] = {
           key, eventId: m.id, homeTeam: m.homeTeam, awayTeam: m.awayTeam,
           tag: p.tag, signal: p.signal, label: p.label, market: p.market,
-          odds: p.odds, stake: p.kelly.stake, evPct: p.evPct,
+          odds: p.odds, stake: p.kelly.stake, evPct: p.evPct, prob: p.prob,
           predictedHome: p.predictedHome,
           homeSets: m.homeSets || 0, awaySets: m.awaySets || 0,
           setNum: m.currentSetNum || 0, ts: now,
@@ -99,7 +99,7 @@ const Stats = (() => {
 
   function get(sport)   { return summary(load(sport)); }
   function reset(sport) { save(sport, { history: [], pending: {} }); }
-  return { processRefresh, get, reset };
+  return { processRefresh, get, reset, load };
 })();
 
 
@@ -756,6 +756,133 @@ const App = (() => {
     } catch {}
   }
 
+  // ── История ставок ────────────────────────────────────
+  function openHistory() {
+    const overlay = document.getElementById('history-overlay');
+    const panel   = document.getElementById('history-panel');
+    if (!overlay || !panel) return;
+    panel.innerHTML = _historyHtml(currentSport);
+    overlay.style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeHistory() {
+    const overlay = document.getElementById('history-overlay');
+    if (overlay) overlay.style.display = 'none';
+    document.body.style.overflow = '';
+  }
+
+  function _exportHistoryCsv() {
+    const d = Stats.load(currentSport);
+    const rows = [['Дата','Матч','Прогноз','Сигнал','КФ','Ставка₽','EV%','Результат','P&L₽']];
+    for (const h of (d.history || []).slice().reverse()) {
+      rows.push([
+        new Date(h.ts).toLocaleString('ru'),
+        `${h.homeTeam} vs ${h.awayTeam}`,
+        h.label,
+        h.signal.toUpperCase(),
+        h.odds.toFixed(2),
+        h.stake,
+        (h.evPct||0).toFixed(1),
+        h.result === 'win' ? 'Зашло' : 'Не зашло',
+        h.profit >= 0 ? `+${h.profit}` : h.profit,
+      ]);
+    }
+    const csv = rows.map(r => r.map(v => `"${v}"`).join(',')).join('\n');
+    const a = document.createElement('a');
+    a.href = 'data:text/csv;charset=utf-8,﻿' + encodeURIComponent(csv);
+    a.download = `bets_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+  }
+
+  function _calibrationHtml(history) {
+    const settled = history.filter(h => h.prob && h.result);
+    if (settled.length < 8) return '';
+    const buckets = [
+      { lo: 0.55, hi: 0.60, label: '55–60%' },
+      { lo: 0.60, hi: 0.65, label: '60–65%' },
+      { lo: 0.65, hi: 0.70, label: '65–70%' },
+      { lo: 0.70, hi: 1.01, label: '70%+' },
+    ];
+    const rows = buckets.map(b => {
+      const items = settled.filter(h => h.prob >= b.lo && h.prob < b.hi);
+      if (!items.length) return null;
+      const wins = items.filter(h => h.result === 'win').length;
+      const actual = wins / items.length;
+      const expected = (b.lo + Math.min(b.hi, 0.75)) / 2;
+      const diff = actual - expected;
+      const barW = Math.round(actual * 100);
+      const expW = Math.round(expected * 100);
+      const cls = Math.abs(diff) < 0.05 ? 'cal-ok' : diff > 0 ? 'cal-hi' : 'cal-lo';
+      return `<div class="cal-row">
+        <span class="cal-lbl">${b.label}</span>
+        <div class="cal-track">
+          <div class="cal-bar ${cls}" style="width:${barW}%"></div>
+          <div class="cal-exp-line" style="left:${expW}%"></div>
+        </div>
+        <span class="cal-val ${cls}">${(actual*100).toFixed(0)}%</span>
+        <span class="cal-cnt">${items.length}шт</span>
+      </div>`;
+    }).filter(Boolean);
+    if (!rows.length) return '';
+    return `<div class="cal-block">
+      <div class="cal-title">📐 Калибровка <span class="cal-hint">— вертикальная линия = ожидаемое</span></div>
+      ${rows.join('')}
+    </div>`;
+  }
+
+  function _historyHtml(sport) {
+    const d = Stats.load(sport);
+    const hist    = (d.history || []).slice().reverse();
+    const pending = Object.values(d.pending || {}).sort((a,b) => b.ts - a.ts);
+    const total   = hist.length + pending.length;
+
+    const calHtml = _calibrationHtml(hist);
+
+    const histRows = hist.map(h => {
+      const isWin  = h.result === 'win';
+      const cls    = isWin ? 'hr-win' : 'hr-loss';
+      const sigCls = h.signal === 'high' ? 'tier-high' : 'tier-med';
+      const sigLbl = h.signal === 'high' ? '🎯 HIGH' : '📊 MED';
+      const dt     = new Date(h.ts).toLocaleDateString('ru', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
+      return `<div class="hist-row-item ${cls}">
+        <div class="hri-top">
+          <span class="hri-sig stats-tier ${sigCls}">${sigLbl}</span>
+          <span class="hri-match">${esc(trunc(h.homeTeam,12))} vs ${esc(trunc(h.awayTeam,12))}</span>
+          <span class="hri-dt">${dt}</span>
+        </div>
+        <div class="hri-mid">${esc(h.label)} · @ ${h.odds.toFixed(2)} · ${h.stake}₽</div>
+        <div class="hri-res ${isWin?'hri-w':'hri-l'}">${isWin ? '✓ Зашло' : '✗ Не зашло'} <span class="hri-pnl">${h.profit >= 0 ? '+' : ''}${h.profit}₽</span></div>
+      </div>`;
+    }).join('');
+
+    const pendRows = pending.map(p => {
+      const sigCls = p.signal === 'high' ? 'tier-high' : 'tier-med';
+      const sigLbl = p.signal === 'high' ? '🎯 HIGH' : '📊 MED';
+      return `<div class="hist-row-item hr-pend">
+        <div class="hri-top">
+          <span class="hri-sig stats-tier ${sigCls}">${sigLbl}</span>
+          <span class="hri-match">${esc(trunc(p.homeTeam,12))} vs ${esc(trunc(p.awayTeam,12))}</span>
+          <span class="hri-dt">⏳ ожидает</span>
+        </div>
+        <div class="hri-mid">${esc(p.label)} · @ ${p.odds.toFixed(2)} · ${p.stake}₽</div>
+      </div>`;
+    }).join('');
+
+    return `<div class="hist-inner">
+      <div class="hist-head-row">
+        <span class="hist-title">📜 История (${total})</span>
+        <div class="hist-actions">
+          ${hist.length ? `<button class="btn-hist-csv" onclick="App.exportHistoryCsv()">⬇ CSV</button>` : ''}
+          <button class="dp-close-btn" onclick="App.closeHistory()">✕</button>
+        </div>
+      </div>
+      ${calHtml}
+      ${pending.length ? `<div class="hpend-section"><div class="hpend-title">⏳ В ожидании (${pending.length})</div>${pendRows}</div>` : ''}
+      ${hist.length ? histRows : '<div class="hist-empty">История ставок появится здесь после первых завершённых прогнозов</div>'}
+    </div>`;
+  }
+
   // ── Detail view ───────────────────────────────────────
   function openDetailView(matchId) {
     const m = analyzed.find(x => x.id === matchId);
@@ -896,7 +1023,9 @@ const App = (() => {
       return Engine.analyze(m, bankroll, _historyCache[m.id] || null, getOddsMovement(m.id), getScoreData(m.id));
     }).filter(Boolean);
 
-    if (filter === 'value')
+    if (filter === 'high')
+      list = list.filter(m => m.predictions.some(p => p.signal === 'high'));
+    else if (filter === 'value')
       list = list.filter(m => m.predictions.some(p => p.signal === 'high' || p.signal === 'medium'));
     else if (filter === 'inprogress')
       list = list.filter(m => m.isLive);
@@ -1266,5 +1395,6 @@ const App = (() => {
   document.addEventListener('DOMContentLoaded', init);
   return { refresh, render, setSport, showBestPrediction, closeBestBanner, resetStats, loadAI,
            openLadder, startLadder, ladderSettle, changeLadderPick, closeLadder, resetLadder,
-           toggleNotifications, openDetailView, closeDetailView };
+           toggleNotifications, openDetailView, closeDetailView,
+           openHistory, closeHistory, exportHistoryCsv: _exportHistoryCsv };
 })();

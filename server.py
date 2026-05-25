@@ -34,6 +34,9 @@ NN_MIN_SAMPLES  = 50   # start training after this many labelled samples
 NN_RETRAIN_INT  = 1800 # retrain every 30 min max
 NN_N_IN         = 8    # number of input features
 _NN_WEIGHTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'nn_weights.json')
+_ELO_FILE        = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'elo_db.json')
+_PAT_FILE        = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pat_db.json')
+_PLYR_FILE       = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'player_db.json')
 
 _ELO_DB   = {}   # {norm_name: elo_rating}
 _PAT_DB   = {}   # {sit_key: [home_wins, away_wins]}
@@ -386,6 +389,71 @@ def _nn_load():
     except Exception as ex:
         print(f'[nn-load] {ex}')
 
+
+def _elo_save():
+    try:
+        with open(_ELO_FILE, 'w') as f:
+            json.dump(_ELO_DB, f, ensure_ascii=False)
+    except Exception as ex:
+        print(f'[elo-save] {ex}')
+
+def _elo_load():
+    global _ELO_DB
+    try:
+        if os.path.exists(_ELO_FILE):
+            with open(_ELO_FILE) as f:
+                data = json.load(f)
+            with _ELO_LOCK:
+                _ELO_DB.update(data)
+            print(f'[elo] Loaded {len(_ELO_DB)} ratings from disk')
+    except Exception as ex:
+        print(f'[elo-load] {ex}')
+
+def _pat_save():
+    try:
+        with open(_PAT_FILE, 'w') as f:
+            json.dump(_PAT_DB, f, ensure_ascii=False)
+    except Exception as ex:
+        print(f'[pat-save] {ex}')
+
+def _pat_load():
+    global _PAT_DB
+    try:
+        if os.path.exists(_PAT_FILE):
+            with open(_PAT_FILE) as f:
+                data = json.load(f)
+            with _ELO_LOCK:
+                _PAT_DB.update({k: v for k, v in data.items() if isinstance(v, list) and len(v) == 2})
+            print(f'[pat] Loaded {len(_PAT_DB)} patterns from disk')
+    except Exception as ex:
+        print(f'[pat-load] {ex}')
+
+def _player_db_save():
+    try:
+        with open(_PLYR_FILE, 'w') as f:
+            json.dump(PLAYER_DB, f, ensure_ascii=False)
+    except Exception as ex:
+        print(f'[plyr-save] {ex}')
+
+def _player_db_load():
+    global PLAYER_DB
+    try:
+        if os.path.exists(_PLYR_FILE):
+            with open(_PLYR_FILE) as f:
+                data = json.load(f)
+            with _DB_LOCK:
+                PLAYER_DB.update(data)
+            print(f'[plyr] Loaded {len(PLAYER_DB)} players from disk')
+    except Exception as ex:
+        print(f'[plyr-load] {ex}')
+
+def _periodic_save():
+    """Background thread: saves all DBs every 5 minutes."""
+    while True:
+        time.sleep(300)
+        _elo_save()
+        _pat_save()
+        _player_db_save()
 
 def _nn_maybe_train():
     global _NN_LAST_TRAIN
@@ -1290,6 +1358,10 @@ def main():
     print('  Спорт: TT · Футбол · Хоккей · Теннис')
     print('=' * 52)
     _nn_load()
+    _elo_load()
+    _pat_load()
+    _player_db_load()
+    threading.Thread(target=_periodic_save, daemon=True).start()
     server = HTTPServer((host, PORT), Handler)
     if PORT == 8080 and os.environ.get('RENDER') is None:
         def _open():

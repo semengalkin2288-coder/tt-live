@@ -1005,3 +1005,94 @@ header {
 .dpp-ev   { font-size: 0.8rem; font-weight: 800; color: var(--green); margin-left: auto; }
 .dpp-meta { font-size: 0.74rem; color: var(--text2); }
 .dp-no-preds { font-size: 0.8rem; color: var(--text3); padding: 0.5rem 0; }
+
+/* ====================================================== */
+/* HISTORY BUTTON                                         */
+/* ====================================================== */
+
+.btn-history {
+  background: var(--bg3); border: 1px solid var(--border2); color: var(--text2);
+  border-radius: 8px; font-size: 0.78rem; cursor: pointer;
+  padding: 0.38rem 0.8rem; transition: all 0.18s; white-space: nowrap;
+}
+.btn-history:hover { color: var(--text); border-color: var(--blue); }
+
+/* ====================================================== */
+/* HISTORY PANEL                                          */
+/* ====================================================== */
+
+.hist-inner { padding: 1rem; display: flex; flex-direction: column; gap: 0.75rem; }
+
+.hist-head-row {
+  display: flex; align-items: center; justify-content: space-between;
+  border-bottom: 1px solid var(--border); padding-bottom: 0.6rem;
+}
+.hist-title { font-size: 1rem; font-weight: 700; }
+.hist-actions { display: flex; gap: 8px; align-items: center; }
+.btn-hist-csv {
+  background: none; border: 1px solid var(--border2); color: var(--text2);
+  border-radius: 7px; font-size: 0.76rem; cursor: pointer;
+  padding: 0.3rem 0.7rem; transition: border-color 0.18s, color 0.18s;
+}
+.btn-hist-csv:hover { border-color: var(--green); color: var(--green); }
+
+.hist-empty { font-size: 0.82rem; color: var(--text3); text-align: center; padding: 1.5rem 0; }
+
+/* History row items */
+.hist-row-item {
+  border-radius: 8px; padding: 8px 10px; margin-bottom: 4px;
+  border: 1px solid var(--border);
+}
+.hr-win  { border-color: var(--gbr); background: rgba(34,197,94,0.04); }
+.hr-loss { border-color: var(--rbr); background: rgba(239,68,68,0.04); }
+.hr-pend { border-color: var(--border2); background: var(--bg3); }
+
+.hri-top  { display: flex; align-items: center; gap: 7px; margin-bottom: 3px; flex-wrap: wrap; }
+.hri-sig  { font-size: 0.68rem !important; padding: 1px 5px !important; }
+.hri-match { font-size: 0.82rem; font-weight: 600; flex: 1; }
+.hri-dt   { font-size: 0.68rem; color: var(--text3); margin-left: auto; white-space: nowrap; }
+.hri-mid  { font-size: 0.76rem; color: var(--text2); margin-bottom: 3px; }
+.hri-res  { font-size: 0.78rem; font-weight: 700; }
+.hri-w    { color: var(--green); }
+.hri-l    { color: var(--red); }
+.hri-pnl  { font-weight: 800; }
+
+/* Pending section */
+.hpend-section { margin-bottom: 4px; }
+.hpend-title { font-size: 0.72rem; color: var(--text3); font-weight: 600;
+               text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; }
+
+/* ====================================================== */
+/* CALIBRATION CHART                                      */
+/* ====================================================== */
+
+.cal-block {
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 9px; padding: 10px 12px;
+}
+.cal-title {
+  font-size: 0.78rem; font-weight: 700; margin-bottom: 8px; color: var(--text);
+}
+.cal-hint { font-size: 0.68rem; color: var(--text3); font-weight: 400; }
+.cal-row  { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; font-size: 0.76rem; }
+.cal-lbl  { min-width: 52px; color: var(--text3); }
+.cal-track {
+  flex: 1; height: 10px; background: var(--border); border-radius: 5px;
+  position: relative; overflow: visible;
+}
+.cal-bar {
+  height: 100%; border-radius: 5px; transition: width 0.4s;
+}
+.cal-ok { background: var(--blue); }
+.cal-hi { background: var(--green); }
+.cal-lo { background: var(--red); }
+.cal-exp-line {
+  position: absolute; top: -3px; width: 2px; height: 16px;
+  background: var(--yellow); border-radius: 1px;
+  transform: translateX(-50%);
+}
+.cal-val { font-weight: 700; min-width: 32px; }
+.cal-val.cal-ok { color: var(--blue); }
+.cal-val.cal-hi { color: var(--green); }
+.cal-val.cal-lo { color: var(--red); }
+.cal-cnt { font-size: 0.68rem; color: var(--text3); min-width: 30px; }
