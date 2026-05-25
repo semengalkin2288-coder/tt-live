@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Sports Live — Прогнозы в лайве</title>
-  <link rel="stylesheet" href="css/style.css?v=11.3" />
+  <link rel="stylesheet" href="css/style.css?v=11.4" />
 </head>
 <body>
   <header>
@@ -21,7 +21,9 @@
         <span class="bankroll-label">Банкролл:</span>
         <input type="number" id="bankroll-input" value="1000" min="100" step="100" />
         <span class="bankroll-currency">₽</span>
+        <span id="pnl-delta" class="pnl-delta"></span>
       </div>
+      <button class="btn-notif" id="notif-btn" onclick="App.toggleNotifications()" title="Включить уведомления о HIGH сигналах">🔔</button>
       <span class="timer-wrap">Обновление через <span id="countdown">25</span>с</span>
       <button class="btn-refresh" id="refresh-btn" onclick="App.refresh()">
         <svg id="refresh-icon" width="13" height="13" viewBox="0 0 24 24" fill="none"
@@ -92,9 +94,9 @@
     </div>
   </main>
 
-  <script src="js/engine.js?v=11.3"></script>
-  <script src="js/engine-sports.js?v=11.3"></script>
-  <script src="js/api.js?v=11.3"></script>
-  <script src="js/app.js?v=11.3"></script>
+  <script src="js/engine.js?v=11.4"></script>
+  <script src="js/engine-sports.js?v=11.4"></script>
+  <script src="js/api.js?v=11.4"></script>
+  <script src="js/app.js?v=11.4"></script>
 </body>
 </html>

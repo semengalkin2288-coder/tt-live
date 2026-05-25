@@ -24,10 +24,19 @@ const Engine = (() => {
     return ((prob * (odds - 1)) - (1 - prob)) * 100;
   }
 
+  // Power (Shin) model: assigns less margin to favorites — more accurate than proportional
   function noVigProb(o1, o2) {
     if (!o1 || !o2) return { home: 0.5, away: 0.5 };
-    const r1 = 1/o1, r2 = 1/o2, t = r1+r2;
-    return { home: r1/t, away: r2/t };
+    const r1 = 1/o1, r2 = 1/o2;
+    if (r1 + r2 <= 1.001) return { home: r1, away: r2 };
+    let lo = 1, hi = 12;
+    for (let i = 0; i < 56; i++) {
+      const mid = (lo + hi) / 2;
+      Math.pow(r1, mid) + Math.pow(r2, mid) > 1 ? lo = mid : hi = mid;
+    }
+    const k = (lo + hi) / 2;
+    const p1 = Math.pow(r1, k), p2 = Math.pow(r2, k), t = p1 + p2;
+    return { home: p1/t, away: p2/t };
   }
 
   function isSetDone(h, a) {

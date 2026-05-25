@@ -794,4 +794,67 @@ header {
 .nn-badge  { font-size: 0.68rem; border-radius: 4px; padding: 1px 6px; }
 .nn-ok     { background: var(--gbg); color: var(--green); border: 1px solid var(--gbr); }
 .nn-warn   { background: var(--ybg); color: var(--yellow); border: 1px solid var(--ybr); }
+
+/* ====================================================== */
+/* NOTIFICATIONS BELL                                     */
+/* ====================================================== */
+
+.btn-notif {
+  background: none; border: 1px solid var(--border2); color: var(--text3);
+  border-radius: 7px; font-size: 0.9rem; padding: 0.3rem 0.55rem;
+  cursor: pointer; transition: all 0.18s; line-height: 1;
+}
+.btn-notif:hover { border-color: var(--yellow); color: var(--yellow); }
+.btn-notif.notif-on { border-color: var(--green); color: var(--green); background: var(--gbg); }
+
+/* ====================================================== */
+/* P&L DELTA (next to bankroll)                           */
+/* ====================================================== */
+
+.pnl-delta {
+  font-size: 0.78rem; font-weight: 700; border-radius: 5px;
+  padding: 2px 6px; white-space: nowrap; transition: all 0.3s;
+}
+.pnl-pos { color: var(--green); background: var(--gbg); }
+.pnl-neg { color: var(--red);   background: var(--rbg); }
+
+/* ====================================================== */
+/* SCORE DISTRIBUTION BARS                                */
+/* ====================================================== */
+
+.score-distrib {
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  background: var(--bg3);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.sd-header {
+  font-size: 0.69rem; color: var(--text3); text-transform: uppercase;
+  letter-spacing: 0.04em; margin-bottom: 6px; font-weight: 600;
+}
+.sd-row {
+  display: flex; align-items: center; gap: 7px; margin-bottom: 4px;
+}
+.sd-row:last-child { margin-bottom: 0; }
+.sd-score {
+  font-size: 0.76rem; font-weight: 700; min-width: 30px;
+}
+.sd-score.sd-home { color: var(--blue); }
+.sd-score.sd-away { color: var(--text2); }
+.sd-bar-track {
+  flex: 1; height: 5px; background: var(--border);
+  border-radius: 3px; overflow: hidden;
+}
+.sd-bar-fill {
+  height: 100%; border-radius: 3px; transition: width 0.4s ease;
+}
+.sd-bar-fill.sd-home { background: var(--blue); }
+.sd-bar-fill.sd-away { background: var(--text3); }
+.sd-row.sd-bar-top .sd-score { color: var(--yellow); }
+.sd-row.sd-bar-top .sd-bar-fill { background: var(--yellow); }
+.sd-pct {
+  font-size: 0.72rem; color: var(--text2); min-width: 30px; text-align: right;
+}
+.sd-row.sd-bar-top .sd-pct { color: var(--yellow); font-weight: 700; }
 .nn-building .nn-hint { color: var(--text3); font-style: italic; }

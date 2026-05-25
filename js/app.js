@@ -107,6 +107,9 @@ const App = (() => {
   const _oddsHistory   = {};   // { matchId: { initial, current } }
   const _scoreTracker  = {};   // { matchId: { prevHomePts, prevAwayPts, prevTs, homeVel, awayVel, recentRun } }
   let _histFetchPending = false;
+  const _notifiedKeys = new Set();
+  let _prevStatProfit = null;
+  let _notifsEnabled = false;
 
   // ── Score velocity & runs tracking ───────────────────
   function updateScoreTracker(rawEvents) {
@@ -137,6 +140,48 @@ const App = (() => {
   }
 
   function getScoreData(matchId) { return _scoreTracker[matchId] || null; }
+
+  // ── Уведомления браузера для HIGH сигналов ───────────
+  function toggleNotifications() {
+    const btn = document.getElementById('notif-btn');
+    if (!('Notification' in window)) { alert('Уведомления не поддерживаются браузером'); return; }
+    if (_notifsEnabled) {
+      _notifsEnabled = false;
+      if (btn) { btn.classList.remove('notif-on'); btn.title = 'Включить уведомления о HIGH сигналах'; }
+      return;
+    }
+    if (Notification.permission === 'granted') {
+      _notifsEnabled = true;
+      if (btn) { btn.classList.add('notif-on'); btn.title = 'Уведомления включены — нажми чтобы выключить'; }
+      return;
+    }
+    Notification.requestPermission().then(perm => {
+      if (perm === 'granted') {
+        _notifsEnabled = true;
+        if (btn) { btn.classList.add('notif-on'); btn.title = 'Уведомления включены'; }
+      }
+    });
+  }
+
+  function _checkNotifications(list) {
+    if (!_notifsEnabled || Notification.permission !== 'granted') return;
+    for (const m of list) {
+      if (!m.isLive) continue;
+      for (const p of m.predictions) {
+        if (p.signal !== 'high') continue;
+        const key = `${m.id}_${p.tag}_${m.homeSets}_${m.awaySets}`;
+        if (_notifiedKeys.has(key)) continue;
+        _notifiedKeys.add(key);
+        try {
+          const evSign = p.evPct > 0 ? '+' : '';
+          new Notification('🎯 HIGH VALUE — Sports Live', {
+            body: `${m.homeTeam} vs ${m.awayTeam}\n${p.label} @ ${p.odds.toFixed(2)}\nEV ${evSign}${p.evPct.toFixed(1)}% · ${(p.prob*100).toFixed(0)}% вероятность`,
+            tag: key,
+          });
+        } catch {}
+      }
+    }
+  }
 
   // ── Odds movement tracking ────────────────────────────
   function updateOddsHistory(rawEvents) {
@@ -277,6 +322,16 @@ const App = (() => {
       const stats = Stats.processRefresh(analyzed, currentSport);
       updateStatsBar(stats);
 
+      // Auto-sync bankroll when bets settle
+      if (_prevStatProfit !== null && stats.profit !== _prevStatProfit) {
+        const delta = stats.profit - _prevStatProfit;
+        const inp = document.getElementById('bankroll-input');
+        if (inp) inp.value = Math.max(100, (parseInt(inp.value) || 1000) + delta);
+      }
+      _prevStatProfit = stats.profit;
+      _updatePnlDelta(stats.profit);
+      _checkNotifications(analyzed);
+
       const liveCount  = analyzed.filter(m => m.isLive).length;
       const valueCount = analyzed.filter(m =>
         m.predictions.some(p => p.signal === 'high' || p.signal === 'medium')
@@ -389,9 +444,20 @@ const App = (() => {
       <button class="stats-reset" onclick="App.resetStats()" title="Сбросить">↺</button>`;
   }
 
+  function _updatePnlDelta(profit) {
+    const el = document.getElementById('pnl-delta');
+    if (!el) return;
+    if (profit === 0) { el.textContent = ''; el.className = 'pnl-delta'; return; }
+    const sign = profit > 0 ? '+' : '';
+    el.textContent = `${sign}${profit}₽`;
+    el.className = `pnl-delta ${profit > 0 ? 'pnl-pos' : 'pnl-neg'}`;
+  }
+
   function resetStats() {
     if (!confirm('Сбросить статистику?')) return;
     Stats.reset(currentSport);
+    _prevStatProfit = null;
+    _updatePnlDelta(0);
     updateStatsBar(Stats.get(currentSport));
   }
 
@@ -854,14 +920,27 @@ const App = (() => {
         </span>
       </div>` : '';
 
-    // Распределение счёта матча
+    // Распределение счёта матча (с визуальными барами)
     const distribHtml = (() => {
       if (!m.scoreDistrib || !m.isLive) return '';
-      const sorted = Object.entries(m.scoreDistrib).sort((a, b) => b[1] - a[1]).slice(0, 4);
-      const items  = sorted.map(([k, v], i) =>
-        `<span class="sd-item${i === 0 ? ' sd-top' : ''}">${k} ${(v * 100).toFixed(0)}%</span>`
-      ).join('');
-      return `<div class="score-distrib"><span class="sd-label">Сценарии:</span>${items}</div>`;
+      const sorted = Object.entries(m.scoreDistrib).sort((a, b) => b[1] - a[1]);
+      const topProb = sorted[0]?.[1] || 1;
+      const items = sorted.slice(0, 4).map(([k, v], i) => {
+        const pct = (v * 100).toFixed(0);
+        const barW = Math.round(v / topProb * 100);
+        const isHome = parseInt(k[0]) > parseInt(k[2]);
+        const cls = i === 0 ? 'sd-bar-top' : '';
+        const teamCls = isHome ? 'sd-home' : 'sd-away';
+        return `<div class="sd-row ${cls}">
+          <span class="sd-score ${teamCls}">${k}</span>
+          <div class="sd-bar-track"><div class="sd-bar-fill ${teamCls}" style="width:${barW}%"></div></div>
+          <span class="sd-pct">${pct}%</span>
+        </div>`;
+      }).join('');
+      return `<div class="score-distrib">
+        <div class="sd-header">Прогноз счёта:</div>
+        ${items}
+      </div>`;
     })();
 
     // Скорость очков
@@ -1026,5 +1105,6 @@ const App = (() => {
 
   document.addEventListener('DOMContentLoaded', init);
   return { refresh, render, setSport, showBestPrediction, closeBestBanner, resetStats, loadAI,
-           openLadder, startLadder, ladderSettle, changeLadderPick, closeLadder, resetLadder };
+           openLadder, startLadder, ladderSettle, changeLadderPick, closeLadder, resetLadder,
+           toggleNotifications };
 })();
