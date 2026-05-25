@@ -1095,4 +1095,64 @@ header {
 .cal-val.cal-ok { color: var(--blue); }
 .cal-val.cal-hi { color: var(--green); }
 .cal-val.cal-lo { color: var(--red); }
+
+/* ====================================================== */
+/* SET WIN PROBABILITY                                    */
+/* ====================================================== */
+.set-win-row {
+  display: flex; align-items: center; gap: 5px;
+  padding: 2px 10px 3px; font-size: 0.74rem;
+}
+.sw-label { color: var(--text3); font-size: 0.70rem; }
+.sw-strong { color: #2ecc71; font-weight: 700; }
+.sw-med    { color: #f1c40f; font-weight: 600; }
+.sw-weak   { color: var(--text2); }
+
+/* ====================================================== */
+/* SPARKLINE                                              */
+/* ====================================================== */
+.spark-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 2px 10px 4px;
+}
+.spark-svg { display: block; flex-shrink: 0; }
+.spark-lbl { font-size: 0.64rem; color: var(--text3); }
+
+/* ====================================================== */
+/* SESSION TRACKER                                        */
+/* ====================================================== */
+.session-bar {
+  align-items: center; gap: 8px;
+  padding: 5px 14px;
+  background: rgba(46,204,113,0.04);
+  border-top: 1px solid rgba(46,204,113,0.12);
+  font-size: 0.78rem; flex-wrap: wrap;
+}
+.sess-label { color: #2ecc71; font-weight: 700; }
+.sess-sep   { color: var(--text3); }
+.sess-bets  { color: var(--text2); }
+.sess-pnl   { font-weight: 700; }
+.sess-stop  {
+  margin-left: auto;
+  background: rgba(231,76,60,0.12);
+  color: #e74c3c;
+  border: 1px solid rgba(231,76,60,0.25);
+  border-radius: 5px;
+  padding: 2px 9px; font-size: 0.73rem; cursor: pointer;
+}
+.sess-stop:hover { background: rgba(231,76,60,0.22); }
+
+.btn-session {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.10);
+  color: var(--text2); border-radius: 6px;
+  padding: 5px 10px; font-size: 0.8rem; cursor: pointer;
+  transition: background 0.15s;
+}
+.btn-session:hover { background: rgba(255,255,255,0.10); }
+.btn-session.session-on {
+  background: rgba(46,204,113,0.12);
+  border-color: rgba(46,204,113,0.30);
+  color: #2ecc71;
+}
 .cal-cnt { font-size: 0.68rem; color: var(--text3); min-width: 30px; }

@@ -522,6 +522,45 @@ const Engine = (() => {
       }
     }
 
+    // Г) Пре-матч сигнал — только Elo + история, матч ещё не начался
+    if (!event.isLive && setsPlayed === 0 && currentHomePts === 0 && currentAwayPts === 0) {
+      const elo2 = history?.elo?.homeProb;
+      if (elo2 !== undefined && Math.abs(elo2 - 0.5) >= 0.12) {
+        let pmProb = elo2;
+        if (hist.agree !== null && hist.strength > 0.18) {
+          const dir = pmProb > 0.5 ? 1 : -1;
+          pmProb = hist.agree
+            ? Math.min(0.88, pmProb + dir * hist.strength * 0.06)
+            : 0.5 + (pmProb - 0.5) * (1 - hist.strength * 0.35);
+          pmProb = Math.max(0.12, Math.min(0.88, pmProb));
+        }
+        const pmAway = 1 - pmProb;
+        if (pmProb >= 0.62 && effW1 && hist.agree === true) {
+          const pmEv = ev(pmProb, effW1);
+          if (pmEv >= 4.0 && pmProb - mktProbs.home >= 0.06) {
+            preds.push({
+              tag: 'prematch', market: 'До матча',
+              label: homeTeam, prob: pmProb, odds: effW1, evPct: pmEv,
+              kelly: kelly(pmProb, effW1, bankroll, pmEv >= 7.0 ? 0.20 : 0.12),
+              signal: pmEv >= 7.0 && Math.abs(elo2 - 0.5) >= 0.15 ? 'high' : 'medium',
+              predictedHome: true,
+            });
+          }
+        } else if (pmAway >= 0.62 && effW2 && hist.agree === true) {
+          const pmEv = ev(pmAway, effW2);
+          if (pmEv >= 4.0 && pmAway - mktProbs.away >= 0.06) {
+            preds.push({
+              tag: 'prematch', market: 'До матча',
+              label: awayTeam, prob: pmAway, odds: effW2, evPct: pmEv,
+              kelly: kelly(pmAway, effW2, bankroll, pmEv >= 7.0 ? 0.20 : 0.12),
+              signal: pmEv >= 7.0 && Math.abs(elo2 - 0.5) >= 0.15 ? 'high' : 'medium',
+              predictedHome: false,
+            });
+          }
+        }
+      }
+    }
+
     preds.sort((a, b) => b.evPct - a.evPct);
 
     // Match winner + handicap are correlated (same underlying prob) — keep only the better EV one

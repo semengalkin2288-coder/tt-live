@@ -122,6 +122,7 @@ const App = (() => {
   let _notifsEnabled  = false;
   let _sse            = null;
   let _sseActive      = false;
+  const _session      = { active: false, startTs: null, startProfit: null, startTotal: null };
 
   // ── Score velocity & runs tracking ───────────────────
   function updateScoreTracker(rawEvents) {
@@ -202,9 +203,14 @@ const App = (() => {
       const h = _oddsHistory[e.id];
       const entry = { w1: e.w1Odds, w2: e.w2Odds };
       if (!h) {
-        _oddsHistory[e.id] = { initial: entry, current: entry };
+        _oddsHistory[e.id] = { initial: entry, current: entry, series: [entry] };
       } else {
-        _oddsHistory[e.id].current = entry;
+        const last = h.series[h.series.length - 1];
+        if (!last || last.w1 !== e.w1Odds || last.w2 !== e.w2Odds) {
+          h.series.push(entry);
+          if (h.series.length > 24) h.series = h.series.slice(-24);
+        }
+        h.current = entry;
       }
     }
   }
@@ -220,6 +226,23 @@ const App = (() => {
       w1Steam: w1Drift >= 5,   // >=5% падение = умные деньги
       w2Steam: w2Drift >= 5,
     };
+  }
+
+  function _sparklineHtml(matchId) {
+    const h = _oddsHistory[matchId];
+    if (!h || !h.series || h.series.length < 3) return '';
+    const vals = h.series.map(p => p.w1);
+    const min = Math.min(...vals), max = Math.max(...vals);
+    if (max - min < 0.02) return '';
+    const W = 60, H = 18;
+    const pts = vals.map((v, i) => {
+      const x = ((i / (vals.length - 1)) * (W - 2) + 1).toFixed(1);
+      const y = (H - 2 - ((v - min) / (max - min)) * (H - 4)).toFixed(1);
+      return `${x},${y}`;
+    }).join(' ');
+    const clr = vals[vals.length-1] < vals[0] - 0.01 ? '#e74c3c'
+              : vals[vals.length-1] > vals[0] + 0.01 ? '#2ecc71' : '#888';
+    return `<svg class="spark-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><polyline points="${pts}" fill="none" stroke="${clr}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   }
 
   // ── AI анализ по клику ────────────────────────────────
@@ -263,9 +286,10 @@ const App = (() => {
   async function fetchHistoryForMatches(matches) {
     if (_histFetchPending) return;
     _histFetchPending = true;
-    const live = matches.filter(m => m.isLive && m.sport === 'tt');
+    const live     = matches.filter(m => m.isLive && m.sport === 'tt');
+    const upcoming = matches.filter(m => !m.isLive && m.sport === 'tt' && m.w1Odds).slice(0, 8);
     let changed = false;
-    await Promise.allSettled(live.map(async m => {
+    await Promise.allSettled([...live, ...upcoming].map(async m => {
       if (_historyCache[m.id]) return; // already loaded
       try {
         const url = `/api/player-stats?p1=${encodeURIComponent(m.homeTeam)}&p2=${encodeURIComponent(m.awayTeam)}`;
@@ -277,6 +301,66 @@ const App = (() => {
     }));
     _histFetchPending = false;
     if (changed) render();
+  }
+
+  // ── Сессионный трекер ─────────────────────────────────
+  function toggleSession() {
+    if (_session.active) {
+      _session.active = false;
+      try { localStorage.removeItem('session_state'); } catch {}
+      _renderSessionBar(null);
+    } else {
+      const st = Stats.get(currentSport);
+      _session.active      = true;
+      _session.startTs     = Date.now();
+      _session.startProfit = st.profit;
+      _session.startTotal  = st.total;
+      _saveSession();
+      _renderSessionBar(st);
+    }
+    const btn = document.getElementById('session-btn');
+    if (btn) btn.classList.toggle('session-on', _session.active);
+  }
+
+  function _renderSessionBar(stats) {
+    const bar = document.getElementById('session-bar');
+    if (!bar) return;
+    if (!_session.active) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
+    const elapsed = Date.now() - _session.startTs;
+    const mins    = Math.floor(elapsed / 60000);
+    const dur     = mins >= 60 ? `${Math.floor(mins/60)}ч ${mins%60}м` : `${mins}м`;
+    const pnl     = stats ? stats.profit - (_session.startProfit || 0) : 0;
+    const bets    = stats ? stats.total  - (_session.startTotal  || 0) : 0;
+    const pnlCls  = pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+    bar.style.display = 'flex';
+    bar.innerHTML = `
+      <span class="sess-label">⏱ ${dur}</span>
+      <span class="sess-sep">·</span>
+      <span class="sess-bets">${bets} ставок</span>
+      <span class="sess-sep">·</span>
+      <span class="sess-pnl ${pnlCls}">${pnl >= 0 ? '+' : ''}${pnl}₽</span>
+      <button class="sess-stop" onclick="App.toggleSession()">■ Стоп</button>
+    `;
+  }
+
+  function _updateSession(stats) { if (_session.active) _renderSessionBar(stats); }
+
+  function _saveSession() {
+    try { localStorage.setItem('session_state', JSON.stringify({
+      active: true, startTs: _session.startTs,
+      startProfit: _session.startProfit, startTotal: _session.startTotal,
+    })); } catch {}
+  }
+
+  function _loadSession() {
+    try {
+      const s = JSON.parse(localStorage.getItem('session_state') || 'null');
+      if (!s || !s.active) return;
+      Object.assign(_session, s);
+      const btn = document.getElementById('session-btn');
+      if (btn) btn.classList.add('session-on');
+      _renderSessionBar(Stats.get(currentSport));
+    } catch {}
   }
 
   // ── Sport tab switch ──────────────────────────────────
@@ -319,6 +403,7 @@ const App = (() => {
     if (currentSport === 'tt') fetchHistoryForMatches(analyzed);
     const stats = Stats.processRefresh(analyzed, currentSport);
     updateStatsBar(stats);
+    _updateSession(stats);
     if (_prevStatProfit !== null && stats.profit !== _prevStatProfit) {
       const delta = stats.profit - _prevStatProfit;
       const inp = document.getElementById('bankroll-input');
@@ -1162,6 +1247,20 @@ const App = (() => {
       ? `<div class="current-pts">${m.currentHomePts}:${m.currentAwayPts} в ${m.currentSetNum}-й ${isTT ? 'партии' : 'сете'}</div>`
       : '';
 
+    // Set win probability display
+    const swPct = m.setWinHomeProb || 50;
+    const setWinHtml = isTT && m.isLive && m.currentPts > 0 && Math.abs(swPct - 50) >= 10 ? (() => {
+      const favHome = swPct > 50;
+      const pct     = favHome ? swPct : 100 - swPct;
+      const favTeam = esc(trunc(favHome ? m.homeTeam : m.awayTeam, 14));
+      const cls     = pct >= 75 ? 'sw-strong' : pct >= 65 ? 'sw-med' : 'sw-weak';
+      return `<div class="set-win-row"><span class="sw-label">Пар.${m.currentSetNum}:</span><span class="${cls}">${favTeam} ${pct}%</span></div>`;
+    })() : '';
+
+    // Sparkline (odds movement history)
+    const sparkSvg  = isTT ? _sparklineHtml(m.id) : '';
+    const sparkHtml = sparkSvg ? `<div class="spark-row">${sparkSvg}<span class="spark-lbl">${esc(trunc(m.homeTeam,10))} ← кф</span></div>` : '';
+
     // Odds block с движением котировок
     const mov = m.steamData?.drift || null;
     const hasSteam = mov && (mov.w1Steam || mov.w2Steam);
@@ -1315,11 +1414,13 @@ const App = (() => {
             <div class="mfill home" style="width:${m.momentum}%"></div>
           </div>
         </div>
+        ${setWinHtml}
         ${historyRowHtml(m)}
         ${domHtml}
         ${velHtml}
         ${distribHtml}
         ${oddsHtml}
+        ${sparkHtml}
         <div class="preds-section">
           <div class="preds-title">📊 Прогнозы</div>
           ${predsHtml}
@@ -1388,6 +1489,7 @@ const App = (() => {
     document.getElementById('bankroll-input')?.addEventListener('change', render);
     updateStatsBar(Stats.get(currentSport));
     _loadLadder();
+    _loadSession();
     refresh();
     _connectSSE();
   }
@@ -1396,5 +1498,6 @@ const App = (() => {
   return { refresh, render, setSport, showBestPrediction, closeBestBanner, resetStats, loadAI,
            openLadder, startLadder, ladderSettle, changeLadderPick, closeLadder, resetLadder,
            toggleNotifications, openDetailView, closeDetailView,
-           openHistory, closeHistory, exportHistoryCsv: _exportHistoryCsv };
+           openHistory, closeHistory, exportHistoryCsv: _exportHistoryCsv,
+           toggleSession };
 })();
