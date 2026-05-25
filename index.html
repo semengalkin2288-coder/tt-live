@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Sports Live — Прогнозы в лайве</title>
-  <link rel="stylesheet" href="css/style.css?v=11.4" />
+  <link rel="stylesheet" href="css/style.css?v=11.5" />
 </head>
 <body>
   <header>
@@ -24,7 +24,7 @@
         <span id="pnl-delta" class="pnl-delta"></span>
       </div>
       <button class="btn-notif" id="notif-btn" onclick="App.toggleNotifications()" title="Включить уведомления о HIGH сигналах">🔔</button>
-      <span class="timer-wrap">Обновление через <span id="countdown">25</span>с</span>
+      <span class="timer-wrap" id="timer-wrap">Обновление через <span id="countdown">25</span>с</span>
       <button class="btn-refresh" id="refresh-btn" onclick="App.refresh()">
         <svg id="refresh-icon" width="13" height="13" viewBox="0 0 24 24" fill="none"
              stroke="currentColor" stroke-width="2.5">
@@ -87,6 +87,11 @@
   <!-- Ladder panel -->
   <div id="ladder-panel" style="display:none"></div>
 
+  <!-- Detail view overlay -->
+  <div id="detail-overlay" class="detail-overlay" style="display:none" onclick="App.closeDetailView()">
+    <div id="detail-panel" class="detail-panel" onclick="event.stopPropagation()"></div>
+  </div>
+
   <main id="matches-grid" class="matches-grid">
     <div class="loader-wrap" id="loader">
       <div class="spinner"></div>
@@ -94,9 +99,9 @@
     </div>
   </main>
 
-  <script src="js/engine.js?v=11.4"></script>
-  <script src="js/engine-sports.js?v=11.4"></script>
-  <script src="js/api.js?v=11.4"></script>
-  <script src="js/app.js?v=11.4"></script>
+  <script src="js/engine.js?v=11.5"></script>
+  <script src="js/engine-sports.js?v=11.5"></script>
+  <script src="js/api.js?v=11.5"></script>
+  <script src="js/app.js?v=11.5"></script>
 </body>
 </html>

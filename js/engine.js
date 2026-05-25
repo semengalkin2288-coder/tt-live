@@ -479,7 +479,7 @@ const Engine = (() => {
       if (sig === 'none') return;
       preds.push({
         tag, market, label, prob, odds, evPct,
-        kelly: kelly(prob, odds, bankroll),
+        kelly: kelly(prob, odds, bankroll, sig === 'high' ? 0.30 : 0.18),
         signal: sig, predictedHome: ph,
       });
     }
@@ -523,6 +523,13 @@ const Engine = (() => {
     }
 
     preds.sort((a, b) => b.evPct - a.evPct);
+
+    // Match winner + handicap are correlated (same underlying prob) — keep only the better EV one
+    if (preds.some(p => p.tag === 'match') && preds.some(p => p.tag === 'handicap')) {
+      const totals = preds.filter(p => p.tag === 'total');
+      const best   = preds.find(p => p.tag === 'match' || p.tag === 'handicap');
+      preds = best ? [best, ...totals] : totals;
+    }
 
     const bestSig    = preds[0]?.signal || 'none';
     const topEV      = preds[0]?.evPct  || 0;

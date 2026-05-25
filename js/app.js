@@ -76,15 +76,25 @@ const Stats = (() => {
   }
 
   function summary(d) {
-    if (!d) return { wins: 0, losses: 0, profit: 0, roi: '0.0', pending: 0, total: 0 };
-    const h = d.history || [];
+    if (!d) return { wins: 0, losses: 0, profit: 0, roi: '0.0', pending: 0, total: 0, high: null, medium: null };
+    const h   = d.history || [];
     const wins = h.filter(x => x.result === 'win').length;
     const loss = h.filter(x => x.result === 'loss').length;
     const prof = h.reduce((s, x) => s + (x.profit || 0), 0);
     const stk  = h.reduce((s, x) => s + (x.stake  || 0), 0);
     const roi  = stk > 0 ? (prof / stk * 100) : 0;
     const pend = Object.keys(d.pending || {}).length;
-    return { wins, losses: loss, profit: Math.round(prof), roi: roi.toFixed(1), pending: pend, total: wins + loss };
+    const tier = sig => {
+      const arr = h.filter(x => x.signal === sig);
+      if (!arr.length) return null;
+      const w = arr.filter(x => x.result === 'win').length;
+      const l = arr.filter(x => x.result === 'loss').length;
+      const p = arr.reduce((s, x) => s + (x.profit || 0), 0);
+      const s = arr.reduce((s, x) => s + (x.stake  || 0), 0);
+      return { wins: w, losses: l, profit: Math.round(p), roi: (s > 0 ? p/s*100 : 0).toFixed(1) };
+    };
+    return { wins, losses: loss, profit: Math.round(prof), roi: roi.toFixed(1),
+             pending: pend, total: wins + loss, high: tier('high'), medium: tier('medium') };
   }
 
   function get(sport)   { return summary(load(sport)); }
@@ -109,7 +119,9 @@ const App = (() => {
   let _histFetchPending = false;
   const _notifiedKeys = new Set();
   let _prevStatProfit = null;
-  let _notifsEnabled = false;
+  let _notifsEnabled  = false;
+  let _sse            = null;
+  let _sseActive      = false;
 
   // ── Score velocity & runs tracking ───────────────────
   function updateScoreTracker(rawEvents) {
@@ -287,7 +299,70 @@ const App = (() => {
 
     // Reset stats bar for new sport
     updateStatsBar(Stats.get(sport));
+    if (_sse) { _sse.close(); _sse = null; _sseActive = false; }
     refresh();
+    _connectSSE();
+  }
+
+  // ── Shared data processing ────────────────────────────
+  function _processData(data) {
+    const bankroll = getBankroll();
+    if (currentSport === 'tt') {
+      updateOddsHistory(data.events);
+      updateScoreTracker(data.events);
+    }
+    analyzed = (data.events || []).map(e => {
+      if (e.sport === 'football' || e.sport === 'hockey' || e.sport === 'tennis')
+        return SportsEngine.analyze(e, bankroll);
+      return Engine.analyze(e, bankroll, _historyCache[e.id] || null, getOddsMovement(e.id), getScoreData(e.id));
+    }).filter(Boolean);
+    if (currentSport === 'tt') fetchHistoryForMatches(analyzed);
+    const stats = Stats.processRefresh(analyzed, currentSport);
+    updateStatsBar(stats);
+    if (_prevStatProfit !== null && stats.profit !== _prevStatProfit) {
+      const delta = stats.profit - _prevStatProfit;
+      const inp = document.getElementById('bankroll-input');
+      if (inp) inp.value = Math.max(100, (parseInt(inp.value) || 1000) + delta);
+    }
+    _prevStatProfit = stats.profit;
+    _updatePnlDelta(stats.profit);
+    _checkNotifications(analyzed);
+    const liveCount  = analyzed.filter(m => m.isLive).length;
+    const valueCount = analyzed.filter(m =>
+      m.predictions.some(p => p.signal === 'high' || p.signal === 'medium')
+    ).length;
+    document.getElementById('count-live').textContent  = liveCount;
+    document.getElementById('count-value').textContent = valueCount;
+    document.getElementById('last-update').textContent = new Date().toLocaleTimeString('ru');
+    const srcEl = document.getElementById('data-source');
+    if (srcEl) srcEl.textContent = data.source ? `Источник: ${data.source}` : '';
+    setStatus(liveCount > 0 ? `${liveCount} лайв матчей` : `Нет лайв матчей`);
+    render();
+    if (_ladder.active && !_ladder.currentPick) _renderLadder();
+  }
+
+  // ── SSE real-time connection ──────────────────────────
+  function _connectSSE() {
+    if (typeof EventSource === 'undefined') return;
+    if (_sse) { _sse.close(); _sse = null; }
+    _sse = new EventSource(`/api/live-stream?sport=${currentSport}`);
+    _sse.onopen = () => {
+      _sseActive = true;
+      clearInterval(countdownTimer);
+      const tw = document.getElementById('timer-wrap');
+      if (tw) tw.innerHTML = '<span class="sse-live-badge">🟢 Live</span>';
+    };
+    _sse.onmessage = ev => {
+      try { _processData(JSON.parse(ev.data)); } catch {}
+    };
+    _sse.onerror = () => {
+      if (!_sseActive) return;
+      _sseActive = false;
+      if (_sse) { _sse.close(); _sse = null; }
+      const tw = document.getElementById('timer-wrap');
+      if (tw) tw.innerHTML = `Обновление через <span id="countdown">${REFRESH_SEC}</span>с`;
+      resetCountdown();
+    };
   }
 
   // ── Refresh ───────────────────────────────────────────
@@ -297,58 +372,9 @@ const App = (() => {
     const btn = document.getElementById('refresh-btn');
     if (btn) btn.classList.add('loading');
     setStatus('Получаю данные...');
-
     try {
       const data = await API.getLive(currentSport);
-      const bankroll = getBankroll();
-
-      if (currentSport === 'tt') {
-        updateOddsHistory(data.events);
-        updateScoreTracker(data.events);
-      }
-
-      analyzed = (data.events || []).map(e => {
-        if (e.sport === 'football' || e.sport === 'hockey' || e.sport === 'tennis') {
-          return SportsEngine.analyze(e, bankroll);
-        }
-        return Engine.analyze(e, bankroll, _historyCache[e.id] || null, getOddsMovement(e.id), getScoreData(e.id));
-      }).filter(Boolean);
-
-      // Fetch history in background after initial render
-      if (currentSport === 'tt') {
-        fetchHistoryForMatches(analyzed);
-      }
-
-      const stats = Stats.processRefresh(analyzed, currentSport);
-      updateStatsBar(stats);
-
-      // Auto-sync bankroll when bets settle
-      if (_prevStatProfit !== null && stats.profit !== _prevStatProfit) {
-        const delta = stats.profit - _prevStatProfit;
-        const inp = document.getElementById('bankroll-input');
-        if (inp) inp.value = Math.max(100, (parseInt(inp.value) || 1000) + delta);
-      }
-      _prevStatProfit = stats.profit;
-      _updatePnlDelta(stats.profit);
-      _checkNotifications(analyzed);
-
-      const liveCount  = analyzed.filter(m => m.isLive).length;
-      const valueCount = analyzed.filter(m =>
-        m.predictions.some(p => p.signal === 'high' || p.signal === 'medium')
-      ).length;
-
-      document.getElementById('count-live').textContent  = liveCount;
-      document.getElementById('count-value').textContent = valueCount;
-      document.getElementById('last-update').textContent = new Date().toLocaleTimeString('ru');
-
-      const srcEl = document.getElementById('data-source');
-      if (srcEl) srcEl.textContent = data.source ? `Источник: ${data.source}` : '';
-
-      const meta = SPORT_META[currentSport] || SPORT_META.tt;
-      setStatus(liveCount > 0 ? `${liveCount} лайв матчей` : `Нет лайв матчей`);
-      render();
-      // Ladder: only update the "waiting" state if there's no current pick yet
-      if (_ladder.active && !_ladder.currentPick) _renderLadder();
+      _processData(data);
     } catch (e) {
       console.error(e);
       const isConn = e.message.includes('fetch') || e.message.includes('Failed');
@@ -359,7 +385,7 @@ const App = (() => {
     } finally {
       isLoading = false;
       if (btn) btn.classList.remove('loading');
-      resetCountdown();
+      if (!_sseActive) resetCountdown();
     }
   }
 
@@ -432,10 +458,12 @@ const App = (() => {
     }
     const profCls = s.profit >= 0 ? 'sh-green' : 'sh-red';
     const roiCls  = parseFloat(s.roi) >= 0 ? 'sh-green' : 'sh-red';
+    const tierHtml = (t, icon, cls) => !t ? '' :
+      `<span class="stats-tier ${cls}">${icon} ${t.wins}✓/${t.losses}✗ <span class="${parseFloat(t.roi)>=0?'sh-green':'sh-red'}">ROI ${t.roi}%</span></span>`;
     el.innerHTML = `
       <span class="stats-label">Стат:</span>
-      <span class="stats-pill win">${s.wins}✓</span>
-      <span class="stats-pill loss">${s.losses}✗</span>
+      ${tierHtml(s.high, '🎯', 'tier-high')}
+      ${tierHtml(s.medium, '📊', 'tier-med')}
       ${s.pending ? `<span class="stats-pill pend">${s.pending}⏳</span>` : ''}
       <span class="stats-sep">·</span>
       <span class="sh-val ${profCls}">${s.profit >= 0 ? '+' : ''}${s.profit}₽</span>
@@ -728,6 +756,134 @@ const App = (() => {
     } catch {}
   }
 
+  // ── Detail view ───────────────────────────────────────
+  function openDetailView(matchId) {
+    const m = analyzed.find(x => x.id === matchId);
+    const overlay = document.getElementById('detail-overlay');
+    const panel   = document.getElementById('detail-panel');
+    if (!m || !overlay || !panel) return;
+    panel.innerHTML = _detailHtml(m);
+    overlay.style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeDetailView() {
+    const overlay = document.getElementById('detail-overlay');
+    if (overlay) overlay.style.display = 'none';
+    document.body.style.overflow = '';
+  }
+
+  function _detailHtml(m) {
+    function sigRow(lbl, val) {
+      return `<div class="dp-sig-row"><span class="dp-sig-lbl">${lbl}</span><span class="dp-sig-val">${val}</span></div>`;
+    }
+    function probBar(lbl, pct) {
+      const cls = pct > 55 ? 'pb-hi' : pct < 45 ? 'pb-lo' : '';
+      const valCls = pct > 55 ? 'sh-green' : pct < 45 ? 'sh-red' : '';
+      return `<div class="dp-pbar-row">
+        <span class="dp-pbar-lbl">${lbl}</span>
+        <div class="dp-pbar-track"><div class="dp-pbar-fill ${cls}" style="width:${pct}%"></div></div>
+        <span class="dp-pbar-val ${valCls}">${pct}%</span>
+      </div>`;
+    }
+
+    const instab    = m._instab || 0;
+    const instabTxt = instab > 0.48
+      ? `⛔ ${(instab*100).toFixed(0)}% — блок сигналов`
+      : `✅ ${(instab*100).toFixed(0)}% — стабильно`;
+    const histTxt  = m.histAgree === true ? '✅ Архив подтверждает' : m.histAgree === false ? '⚠️ Архив противоречит' : '— Нет данных архива';
+    const steamAg  = m.steamData?.agrees;
+    const steamTxt = steamAg === true ? '✅ Движение в нашу сторону' : steamAg === false ? '⚠️ Умные деньги против' : '— Нет движения котировок';
+    const dom      = m.domData;
+    const domTxt   = dom && Math.abs(dom.score) >= 0.3
+      ? `✅ ${dom.score > 0 ? esc(trunc(m.homeTeam,12))+' +'+dom.homeAvg : esc(trunc(m.awayTeam,12))+' +'+dom.awayAvg}оч/пар`
+      : '— Нет явного доминирования';
+    const nnP   = m.nnProb;
+    const nnTxt = nnP != null
+      ? (m.nnAgrees === true
+          ? `✅ ${nnP > 50 ? esc(trunc(m.homeTeam,12)) : esc(trunc(m.awayTeam,12))} ${nnP > 50 ? nnP : 100-nnP}%`
+          : m.nnAgrees === false
+            ? `⚠️ Расходится с моделью`
+            : `— ${nnP}% (слабый сигнал)`)
+      : '— Накапливает данные';
+    const elo    = m._eloData;
+    const eloTxt = elo && (elo.p1 !== 1500 || elo.p2 !== 1500)
+      ? `${esc(trunc(m.homeTeam,10))} ${elo.p1} vs ${esc(trunc(m.awayTeam,10))} ${elo.p2} → ${(elo.homeProb*100).toFixed(0)}%`
+      : '— Рейтинг накапливается';
+
+    const mktHome  = m.w1Odds && m.w2Odds
+      ? Math.round(Math.pow(1/m.w1Odds, 1) / (Math.pow(1/m.w1Odds,1) + Math.pow(1/m.w2Odds,1)) * 100)
+      : 50;
+    const distrib  = m.scoreDistrib ? Object.entries(m.scoreDistrib).sort((a,b) => b[1]-a[1]) : [];
+    const topProb  = distrib[0]?.[1] || 1;
+
+    return `<div class="detail-inner">
+      <div class="dp-close-row"><button class="dp-close-btn" onclick="App.closeDetailView()">✕ Закрыть</button></div>
+      <div class="dp-head">
+        <div class="dp-match">
+          <span class="dp-team ${m.matchWinHomeProb >= 50 ? 'dp-fav' : ''}">${esc(m.homeTeam)}</span>
+          <div class="dp-score-wrap">
+            <span class="dp-score-main">${m.homeSets}:${m.awaySets}</span>
+            ${m.currentPts > 0 ? `<span class="dp-score-cur">${m.currentHomePts}:${m.currentAwayPts}</span>` : ''}
+          </div>
+          <span class="dp-team ${m.matchWinAwayProb > 50 ? 'dp-fav' : ''}">${esc(m.awayTeam)}</span>
+        </div>
+        <div class="dp-meta-row">
+          <span class="dp-tour">${esc(m.tournament)}</span>
+          ${m.isLive ? '<span class="dp-live-dot"></span>' : ''}
+        </div>
+      </div>
+
+      <div class="dp-section">
+        <div class="dp-sh">🔍 Источники сигнала</div>
+        <div class="dp-sigs">
+          ${sigRow('Нестабильность', instabTxt)}
+          ${sigRow('Архив игроков', histTxt)}
+          ${sigRow('Умные деньги', steamTxt)}
+          ${sigRow('Доминирование', domTxt)}
+          ${sigRow('Нейросеть', nnTxt)}
+          ${sigRow('Elo рейтинг', eloTxt)}
+        </div>
+      </div>
+
+      <div class="dp-section">
+        <div class="dp-sh">📊 Вероятность победы: ${esc(trunc(m.homeTeam, 18))}</div>
+        ${probBar('Рынок (Power model)', mktHome)}
+        ${probBar('Итоговая оценка', m.matchWinHomeProb)}
+      </div>
+
+      ${distrib.length ? `<div class="dp-section">
+        <div class="dp-sh">🎯 Все сценарии счёта</div>
+        ${distrib.map(([k,v], i) => {
+          const isHome = parseInt(k[0]) > parseInt(k[2]);
+          const barW   = Math.round(v / topProb * 100);
+          return `<div class="dpd-row${i===0?' dpd-top':''}">
+            <span class="dpd-score ${isHome?'dpd-h':'dpd-a'}">${k}</span>
+            <div class="dpd-bar-t"><div class="dpd-bar-f ${isHome?'dpd-h':'dpd-a'}" style="width:${barW}%"></div></div>
+            <span class="dpd-pct">${(v*100).toFixed(0)}%</span>
+          </div>`;
+        }).join('')}
+      </div>` : ''}
+
+      <div class="dp-section">
+        <div class="dp-sh">💡 Прогнозы для ставки</div>
+        ${m.predictions.length
+          ? m.predictions.map(p => {
+              const evSign = p.evPct > 0 ? '+' : '';
+              return `<div class="dp-pred ${p.signal === 'high' ? 'dp-pred-high' : 'dp-pred-med'}">
+                <div class="dpp-top">
+                  <span class="dpp-sig">${p.signal === 'high' ? '🎯 HIGH' : '📊 VALUE'}</span>
+                  <span class="dpp-label">${esc(p.label)}</span>
+                  <span class="dpp-ev">${evSign}${p.evPct.toFixed(1)}%</span>
+                </div>
+                <div class="dpp-meta">${(p.prob*100).toFixed(0)}% вер. · @ ${p.odds.toFixed(2)} · Kelly ${p.kelly.stake}₽ (${p.kelly.pct}%)</div>
+              </div>`;
+            }).join('')
+          : '<div class="dp-no-preds">⏳ Нет уверенных сигналов прямо сейчас</div>'}
+      </div>
+    </div>`;
+  }
+
   // ── Render ────────────────────────────────────────────
   function render() {
     const filter   = document.getElementById('filter-select')?.value || 'all';
@@ -982,6 +1138,8 @@ const App = (() => {
         Открыть на Леоне →
       </a>` : '';
 
+    const detailBtn = `<button class="btn-detail" onclick="App.openDetailView('${m.id}')">📋 Детали</button>`;
+
     const aiHtml = isTT && m.isLive ? `
       <button class="btn-ai" id="aibtn-${m.id}" onclick="App.loadAI('${m.id}', this)">🤖 AI анализ</button>
       <div class="ai-result" id="ai-${m.id}" style="display:none"></div>` : '';
@@ -1039,7 +1197,7 @@ const App = (() => {
         </div>
         ${kellyHtml}
         ${aiHtml}
-        ${leonBtn}
+        <div class="card-bottom-row">${leonBtn}${detailBtn}</div>
       </div>
     </div>`;
   }
@@ -1067,6 +1225,7 @@ const App = (() => {
 
   // ── Countdown ─────────────────────────────────────────
   function resetCountdown() {
+    if (_sseActive) return;
     countdownVal = REFRESH_SEC;
     clearInterval(countdownTimer);
     countdownTimer = setInterval(() => {
@@ -1101,10 +1260,11 @@ const App = (() => {
     updateStatsBar(Stats.get(currentSport));
     _loadLadder();
     refresh();
+    _connectSSE();
   }
 
   document.addEventListener('DOMContentLoaded', init);
   return { refresh, render, setSport, showBestPrediction, closeBestBanner, resetStats, loadAI,
            openLadder, startLadder, ladderSettle, changeLadderPick, closeLadder, resetLadder,
-           toggleNotifications };
+           toggleNotifications, openDetailView, closeDetailView };
 })();

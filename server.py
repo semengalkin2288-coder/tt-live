@@ -1107,7 +1107,9 @@ class Handler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=BASE_DIR, **kwargs)
 
     def do_GET(self):
-        if self.path.startswith('/api/live'):
+        if self.path.startswith('/api/live-stream'):
+            self._sse_stream()
+        elif self.path.startswith('/api/live'):
             self._api()
         elif self.path.startswith('/api/player-stats'):
             self._player_stats_api()
@@ -1124,6 +1126,42 @@ class Handler(SimpleHTTPRequestHandler):
             self.wfile.write(b'ok')
         else:
             super().do_GET()
+
+    def _sse_stream(self):
+        qs    = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        sport = qs.get('sport', ['tt'])[0]
+        if sport not in SPORTS:
+            sport = 'tt'
+        self.send_response(200)
+        self.send_header('Content-Type',  'text/event-stream')
+        self.send_header('Cache-Control', 'no-cache')
+        self.send_header('Connection',    'keep-alive')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+        def _push(res):
+            payload = json.dumps({
+                'events': res['events'], 'source': res['source'],
+                'count':  len(res['events']), 'sport': sport,
+                'ts':     int(time.time()),
+            }, ensure_ascii=False)
+            self.wfile.write(f'data: {payload}\n\n'.encode('utf-8'))
+            self.wfile.flush()
+        try:
+            res     = get_sport_data(sport)
+            _push(res)
+            last_ts = res['ts']
+            while True:
+                time.sleep(4)
+                self.wfile.write(b': ping\n\n')
+                self.wfile.flush()
+                res = get_sport_data(sport)
+                if res['ts'] > last_ts:
+                    _push(res)
+                    last_ts = res['ts']
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        except Exception as ex:
+            print(f'[SSE] {ex}')
 
     def _api(self):
         try:
