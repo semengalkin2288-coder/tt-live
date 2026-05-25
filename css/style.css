@@ -779,3 +779,19 @@ header {
 }
 .btn-ld-change:hover { border-color: var(--blue); color: var(--blue); }
 .lpick-change-hint { font-size: 0.68rem; color: var(--text3); }
+
+/* ====================================================== */
+/* NEURAL NETWORK display                                 */
+/* ====================================================== */
+
+.nn-row {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  font-size: 0.76rem; margin-top: 5px; padding-top: 5px;
+  border-top: 1px solid var(--border);
+}
+.nn-lbl    { color: var(--text3); white-space: nowrap; }
+.nn-val    { color: var(--blue);  font-weight: 600; }
+.nn-badge  { font-size: 0.68rem; border-radius: 4px; padding: 1px 6px; }
+.nn-ok     { background: var(--gbg); color: var(--green); border: 1px solid var(--gbr); }
+.nn-warn   { background: var(--ybg); color: var(--yellow); border: 1px solid var(--ybr); }
+.nn-building .nn-hint { color: var(--text3); font-style: italic; }

@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """Sports Live Analyzer — Backend v5 | Leon.ru + Sofascore | TT·Football·Hockey·Tennis"""
 
-import json, os, re as _re, ssl, time, threading, webbrowser
+import json, math, os, re as _re, ssl, time, threading, webbrowser
+
+try:
+    import numpy as _np
+    _HAS_NP = True
+except ImportError:
+    _HAS_NP = False
 import urllib.request, urllib.parse, urllib.error
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -17,6 +23,17 @@ _lock   = threading.Lock()
 _PLAYER_CACHE = {}
 _PLAYER_LOCK  = threading.Lock()
 PLAYER_TTL    = 3600 * 6  # 6 hours
+
+# ── Neural Network globals ────────────────────────────────────────────────────
+_NN_DATA        = []   # [(feature_vector, label_0_or_1)]  training samples
+_NN_MODEL       = None # trained TinyNN instance
+_NN_LOCK        = threading.Lock()
+_MATCH_SEEN     = {}   # {match_id: feature_vector}  live snapshots awaiting outcome
+_NN_LAST_TRAIN  = 0
+NN_MIN_SAMPLES  = 50   # start training after this many labelled samples
+NN_RETRAIN_INT  = 1800 # retrain every 30 min max
+NN_N_IN         = 8    # number of input features
+_NN_WEIGHTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'nn_weights.json')
 
 _ELO_DB   = {}   # {norm_name: elo_rating}
 _PAT_DB   = {}   # {sit_key: [home_wins, away_wins]}
@@ -271,6 +288,163 @@ def get_local_player_stats(p1_name, p2_name):
         'elo': {'p1': r1, 'p2': r2, 'homeProb': round(_elo_expected(r1, r2), 3),
                 'p1Name': p1_name, 'p2Name': p2_name},
     }
+
+
+# ── Neural Network ────────────────────────────────────────────────────────────
+
+def _extract_features(ev):
+    """8-feature normalised vector from a parsed TT event dict."""
+    hs  = float(ev.get('homeSets', 0))
+    aws = float(ev.get('awaySets', 0))
+    clh = float(ev.get('currentHomePts', 0))
+    cla = float(ev.get('currentAwayPts', 0))
+    w1  = float(ev.get('w1Odds') or 0)
+    w2  = float(ev.get('w2Odds') or 0)
+    return [
+        math.log(w2 / w1) if w1 > 1.01 and w2 > 1.01 else 0.0,   # log-odds (market)
+        (hs  - aws) / 3.0,                                          # set lead
+        (clh - cla) / 10.0,                                         # point lead
+        (hs  + aws) / 5.0,                                          # match progress
+        (clh + cla) / 20.0,                                         # set progress
+        (1.0/w1 - 1.0/w2) if w1 > 1 and w2 > 1 else 0.0,          # implied prob diff
+        1.0 if hs > aws else (-1.0 if aws > hs else 0.0),           # set leader sign
+        1.0 if w1 < w2 else (-1.0 if w2 < w1 else 0.0),            # odds leader sign
+    ]
+
+
+class TinyNN:
+    """Compact 2-hidden-layer MLP for TT match outcome prediction."""
+
+    def __init__(self, n_in=NN_N_IN, n_h1=20, n_h2=12):
+        if not _HAS_NP:
+            raise RuntimeError('numpy not available')
+        s = 0.3
+        self.W1 = (_np.random.randn(n_h1, n_in) * s).astype(float)
+        self.b1 = _np.zeros(n_h1)
+        self.W2 = (_np.random.randn(n_h2, n_h1) * s).astype(float)
+        self.b2 = _np.zeros(n_h2)
+        self.W3 = (_np.random.randn(1, n_h2) * s).astype(float)
+        self.b3 = _np.zeros(1)
+
+    @staticmethod
+    def _relu(x): return _np.maximum(0.0, x)
+    @staticmethod
+    def _sig(x):  return 1.0 / (1.0 + _np.exp(-_np.clip(x, -20, 20)))
+
+    def _fwd(self, X):
+        h1  = self._relu(X @ self.W1.T + self.b1)
+        h2  = self._relu(h1 @ self.W2.T + self.b2)
+        out = self._sig(h2 @ self.W3.T + self.b3).ravel()
+        return out, h1, h2
+
+    def predict(self, x):
+        return float(self._fwd(_np.array(x, float).reshape(1, -1))[0][0])
+
+    def train(self, X, y, epochs=600, lr=0.012, lam=1e-4):
+        X = _np.array(X, float); y = _np.array(y, float)
+        n, bs = len(X), max(16, len(X) // 8)
+        for _ in range(epochs):
+            idx = _np.random.permutation(n)
+            for i in range(0, n, bs):
+                xb = X[idx[i:i+bs]]; yb = y[idx[i:i+bs]]
+                p, h1, h2 = self._fwd(xb)
+                d3 = ((p - yb) / len(xb)).reshape(-1, 1)
+                dW3 = d3.T @ h2 + lam * self.W3; db3 = d3.sum(0)
+                d2  = (d3 @ self.W3) * (h2 > 0)
+                dW2 = d2.T @ h1   + lam * self.W2; db2 = d2.sum(0)
+                d1  = (d2 @ self.W2) * (h1 > 0)
+                dW1 = d1.T @ xb   + lam * self.W1; db1 = d1.sum(0)
+                self.W3 -= lr * dW3; self.b3 -= lr * db3
+                self.W2 -= lr * dW2; self.b2 -= lr * db2
+                self.W1 -= lr * dW1; self.b1 -= lr * db1
+            lr *= 0.997
+        p_all = self._fwd(X)[0]
+        acc  = float(_np.mean((p_all > 0.5) == (y > 0.5)))
+        loss = float(-_np.mean(y * _np.log(p_all + 1e-9) + (1-y) * _np.log(1-p_all + 1e-9)))
+        return {'acc': round(acc, 3), 'loss': round(loss, 4), 'n': n}
+
+    def save(self):
+        return {k: getattr(self, k).tolist() for k in ('W1', 'b1', 'W2', 'b2', 'W3', 'b3')}
+
+    @classmethod
+    def from_dict(cls, d):
+        obj = object.__new__(cls)
+        for k, v in d.items():
+            setattr(obj, k, _np.array(v, float))
+        return obj
+
+
+def _nn_load():
+    global _NN_MODEL
+    if not _HAS_NP:
+        return
+    try:
+        if os.path.exists(_NN_WEIGHTS_FILE):
+            with open(_NN_WEIGHTS_FILE) as f:
+                _NN_MODEL = TinyNN.from_dict(json.load(f))
+            print(f'[nn] Weights loaded from disk ({_NN_WEIGHTS_FILE})')
+    except Exception as ex:
+        print(f'[nn-load] {ex}')
+
+
+def _nn_maybe_train():
+    global _NN_LAST_TRAIN
+    if not _HAS_NP:
+        return
+    now = time.time()
+    with _NN_LOCK:
+        if now - _NN_LAST_TRAIN < NN_RETRAIN_INT:
+            return
+        data = list(_NN_DATA)
+    if len(data) < NN_MIN_SAMPLES:
+        return
+
+    def _train():
+        global _NN_MODEL, _NN_LAST_TRAIN
+        print(f'[nn] Training on {len(data)} samples...')
+        try:
+            X = [d[0] for d in data]
+            y = [d[1] for d in data]
+            model = TinyNN()
+            m = model.train(X, y)
+            try:
+                with open(_NN_WEIGHTS_FILE, 'w') as f:
+                    json.dump(model.save(), f)
+            except Exception as ex:
+                print(f'[nn-save] {ex}')
+            with _NN_LOCK:
+                _NN_MODEL      = model
+                _NN_LAST_TRAIN = time.time()
+            print(f'[nn] Done — acc={m["acc"]:.1%}  loss={m["loss"]:.4f}  n={m["n"]}')
+        except Exception as ex:
+            print(f'[nn-train] {ex}')
+
+    threading.Thread(target=_train, daemon=True).start()
+
+
+def nn_predict(features):
+    """Return home-win probability from NN, or None if model not ready."""
+    with _NN_LOCK:
+        model = _NN_MODEL
+    if model is None:
+        return None
+    try:
+        return max(0.05, min(0.95, model.predict(features)))
+    except Exception:
+        return None
+
+
+def record_nn_sample(match_id, home_won):
+    """Pair live features captured earlier with the final match outcome."""
+    with _NN_LOCK:
+        feats = _MATCH_SEEN.pop(str(match_id), None)
+    if feats is None:
+        return
+    with _NN_LOCK:
+        _NN_DATA.append((feats, 1.0 if home_won else 0.0))
+        if len(_NN_DATA) > 3000:
+            _NN_DATA[:] = _NN_DATA[-3000:]
+    _nn_maybe_train()
 
 
 # ── Groq AI + rule-based analysis ─────────────────────────────────────────────
@@ -540,11 +714,9 @@ def parse_tt(base, detail=None):
             if not done: clh, cla = last['home'], last['away']
     mkts = ev.get('markets', [])
     w1, w2, to, tu, tl, hh, ha, hl = _odds_tt(mkts)
-    # Record finished matches into our player database
-    if hs >= 3 or aws >= 3:
-        record_tt_result(hn, an, hs, aws)
-    return {
-        'id': str(ev.get('id', base.get('id', ''))), 'source': 'leon', 'sport': 'tt',
+    mid = str(ev.get('id', base.get('id', '')))
+    result = {
+        'id': mid, 'source': 'leon', 'sport': 'tt',
         'homeTeam': hn, 'awayTeam': an, 'tournament': lg or 'Настольный теннис',
         'homeSets': hs, 'awaySets': aws, 'sets': sets,
         'currentSetNum': csn, 'currentHomePts': clh, 'currentAwayPts': cla,
@@ -553,7 +725,19 @@ def parse_tt(base, detail=None):
         'totalOverOdds': to, 'totalUnderOdds': tu, 'totalLine': tl,
         'hdpHomeOdds': hh, 'hdpAwayOdds': ha, 'hdpLine': hl,
         'leonUrl': url, 'isLive': is_live, 'status': 'inprogress' if is_live else 'notstarted',
+        'nnProb': None,
     }
+    # Neural network: capture live features, record outcome when done
+    if is_live and hs < 3 and aws < 3:
+        feats = _extract_features(result)
+        with _NN_LOCK:
+            _MATCH_SEEN[mid] = feats
+        nn_p = nn_predict(feats)
+        result['nnProb'] = round(nn_p * 100, 1) if nn_p is not None else None
+    if hs >= 3 or aws >= 3:
+        record_tt_result(hn, an, hs, aws)
+        record_nn_sample(mid, hs > aws)
+    return result
 
 
 # ── Football / Hockey ────────────────────────────────────────────────────────
@@ -931,6 +1115,8 @@ class Handler(SimpleHTTPRequestHandler):
             self._ai_api()
         elif self.path.startswith('/api/elo-stats'):
             self._elo_api()
+        elif self.path.startswith('/api/nn-stats'):
+            self._nn_stats_api()
         elif self.path == '/health':
             self.send_response(200)
             self.send_header('Content-Type', 'text/plain')
@@ -1034,6 +1220,22 @@ class Handler(SimpleHTTPRequestHandler):
         except Exception as ex:
             self._json_resp(500, {'error': str(ex)})
 
+    def _nn_stats_api(self):
+        try:
+            with _NN_LOCK:
+                samples = len(_NN_DATA)
+                ready   = _NN_MODEL is not None
+                last_t  = _NN_LAST_TRAIN
+            self._json_resp(200, {
+                'ready':      ready,
+                'samples':    samples,
+                'minSamples': NN_MIN_SAMPLES,
+                'lastTrain':  int(last_t),
+                'hasNumpy':   _HAS_NP,
+            })
+        except Exception as ex:
+            self._json_resp(500, {'error': str(ex)})
+
     def log_message(self, fmt, *args):
         if args and '/api/' in str(args[0]):
             print(f'  [{time.strftime("%H:%M:%S")}] {args[0]} {args[1]}')
@@ -1049,6 +1251,7 @@ def main():
     print(f'  Port: {PORT}')
     print('  Спорт: TT · Футбол · Хоккей · Теннис')
     print('=' * 52)
+    _nn_load()
     server = HTTPServer((host, PORT), Handler)
     if PORT == 8080 and os.environ.get('RENDER') is None:
         def _open():

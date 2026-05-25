@@ -292,7 +292,8 @@ const App = (() => {
       const meta = SPORT_META[currentSport] || SPORT_META.tt;
       setStatus(liveCount > 0 ? `${liveCount} лайв матчей` : `Нет лайв матчей`);
       render();
-      if (_ladder.active) _renderLadder();
+      // Ladder: only update the "waiting" state if there's no current pick yet
+      if (_ladder.active && !_ladder.currentPick) _renderLadder();
     } catch (e) {
       console.error(e);
       const isConn = e.message.includes('fetch') || e.message.includes('Failed');
@@ -745,9 +746,25 @@ const App = (() => {
         <span class="elo-prob">${(elo.homeProb*100).toFixed(0)}% → ${(( 1-elo.homeProb)*100).toFixed(0)}%</span>
       </div>` : '';
 
+    const nnHtml = m.nnProb !== null && m.nnProb !== undefined
+      ? (() => {
+          const pct = m.nnProb > 50 ? m.nnProb : (100 - m.nnProb).toFixed(0);
+          const who = m.nnProb > 50 ? trunc(m.homeTeam, 12) : trunc(m.awayTeam, 12);
+          const cls2 = m.nnAgrees === true ? 'nn-agree' : m.nnAgrees === false ? 'nn-disagree' : '';
+          return `<div class="nn-row ${cls2}">
+            <span class="nn-lbl">🧠 Нейросеть:</span>
+            <span class="nn-val">${esc(who)} ${pct}%</span>
+            ${m.nnAgrees === true ? '<span class="nn-badge nn-ok">✓ совпадает</span>'
+              : m.nnAgrees === false ? '<span class="nn-badge nn-warn">≠ расходится</span>' : ''}
+          </div>`;
+        })()
+      : (m.isLive && m.sport === 'tt'
+          ? `<div class="nn-row nn-building">🧠 Нейросеть: <span class="nn-hint">накапливает данные...</span></div>`
+          : '');
+
     return `<div class="hist-block ${cls}">
       <div class="hist-header">${verdict}</div>
-      ${pRow(m.homeTeam, p1)}${pRow(m.awayTeam, p2)}${h2hHtml}${eloHtml}
+      ${pRow(m.homeTeam, p1)}${pRow(m.awayTeam, p2)}${h2hHtml}${eloHtml}${nnHtml}
     </div>`;
   }
 

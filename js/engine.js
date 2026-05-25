@@ -261,21 +261,21 @@ const Engine = (() => {
   }
 
   // ── Уровень сигнала ───────────────────────────────────────
-  // HIGH = математика + (архив ИЛИ умные деньги) + стабильность
-  function signalLevel(evPct, prob, instab, histAgree, histStrength, steamAgrees, domScore) {
+  // HIGH = математика + минимум 1 из: архив / стим / доминирование / нейросеть
+  function signalLevel(evPct, prob, instab, histAgree, histStrength, steamAgrees, domScore, nnAgrees) {
     if (instab > 0.6) return 'none';
 
-    const archiveOK = histAgree === true && histStrength >= 0.22;
+    const archiveOK = histAgree  === true && histStrength >= 0.22;
     const steamOK   = steamAgrees === true;
-    const domOK     = Math.abs(domScore || 0) >= 0.3; // явное доминирование
+    const domOK     = Math.abs(domScore || 0) >= 0.3;
+    const nnOK      = nnAgrees   === true;
 
-    // HIGH: нужно как минимум два подтверждения из трёх
-    const confirmations = (archiveOK ? 1 : 0) + (steamOK ? 1 : 0) + (domOK ? 1 : 0);
+    const confirmations = (archiveOK?1:0) + (steamOK?1:0) + (domOK?1:0) + (nnOK?1:0);
     if (evPct >= 5.5 && prob >= 0.63 && instab <= 0.25 && confirmations >= 1) return 'high';
 
     // MEDIUM: хорошая математика, нет противоречий архива
     if (evPct >= 3 && prob >= 0.58 && instab <= 0.38 && histAgree !== false) return 'medium';
-    if (evPct >= 4.5 && prob >= 0.61 && instab <= 0.3) return 'medium'; // без архива
+    if (evPct >= 4.5 && prob >= 0.61 && instab <= 0.3) return 'medium';
 
     // LOW: слабый сигнал
     if (evPct >= 1.5 && prob >= 0.55 && instab <= 0.5) return 'low';
@@ -405,6 +405,26 @@ const Engine = (() => {
       }
     }
 
+    // ── Нейросеть (обученная на матчах Леона) ─────────────
+    const nnProb = (typeof event.nnProb === 'number') ? event.nnProb : null;
+    if (nnProb !== null) {
+      const nnP   = nnProb / 100;
+      const delta = Math.abs(nnP - 0.5);
+      if (delta >= 0.07) {
+        const nnDir    = nnP      > 0.5 ? 1 : -1;
+        const modelDir = trueHome > 0.5 ? 1 : -1;
+        if (nnDir === modelDir) {
+          trueHome = Math.min(0.93, trueHome + nnDir * delta * 0.06);
+        } else {
+          trueHome = 0.5 + (trueHome - 0.5) * 0.88;
+        }
+        trueHome = Math.max(0.05, Math.min(0.95, trueHome));
+      }
+    }
+    const nnAgrees = (nnProb !== null && Math.abs(nnProb/100 - 0.5) >= 0.07)
+      ? (nnProb > 50) === (trueHome > 0.5)
+      : null;
+
     const trueAway = 1 - trueHome;
 
     const effW1 = w1Odds || Math.max(1.05, 1 / (trueHome * 0.94));
@@ -441,7 +461,7 @@ const Engine = (() => {
     function addPred(tag, market, label, prob, mktProb, odds, evPct, ph) {
       if (!odds || odds <= 1.05) return;
       if (!isActionable(homeSets, awaySets)) return;
-      const sig = signalLevel(evPct, prob, instab, hist.agree, hist.strength, steam.agrees, domData.score);
+      const sig = signalLevel(evPct, prob, instab, hist.agree, hist.strength, steam.agrees, domData.score, nnAgrees);
       if (sig === 'none') return;
       preds.push({
         tag, market, label, prob, odds, evPct,
@@ -516,6 +536,7 @@ const Engine = (() => {
       domData,
       steamData:   { ...steam, drift: oddsMovement },
       scoreDistrib,
+      nnProb,  nnAgrees,
       _scoreVel:   scoreData ? { home: scoreData.homeVel, away: scoreData.awayVel, run: scoreData.recentRun } : null,
       _eloData:    history?.elo || null,
       _instab: +instab.toFixed(2),
