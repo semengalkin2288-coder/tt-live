@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Sports Live — Прогнозы в лайве</title>
-  <link rel="stylesheet" href="css/style.css?v=11.9" />
+  <link rel="stylesheet" href="css/style.css?v=12.0" />
 </head>
 <body>
   <header>
@@ -44,6 +44,9 @@
     <button class="tab-btn tab-disabled" disabled title="Скоро">🎾 Теннис</button>
   </nav>
 
+  <!-- Warming signals strip -->
+  <div id="warming-strip"></div>
+
   <!-- Stats bar -->
   <div class="statsbar">
     <div id="stats-bar" class="statsbar-inner">
@@ -76,6 +79,9 @@
       <button class="btn-express" onclick="App.openExpress()">
         🎲 Экспресс
       </button>
+      <button class="btn-ai-summary" id="ai-summary-btn" onclick="App.loadAISummary()">
+        🤖 AI обзор
+      </button>
       <label>Фильтр:</label>
       <select id="filter-select" onchange="App.render()">
         <option value="all">Все матчи</option>
@@ -101,6 +107,9 @@
   <!-- Express panel -->
   <div id="express-panel" style="display:none"></div>
 
+  <!-- AI Summary overlay -->
+  <div id="ai-summary-overlay" onclick="document.getElementById('ai-summary-overlay').style.display='none';document.body.style.overflow=''"></div>
+
   <!-- History overlay -->
   <div id="history-overlay" class="detail-overlay" style="display:none" onclick="App.closeHistory()">
     <div id="history-panel" class="detail-panel" onclick="event.stopPropagation()"></div>
@@ -118,9 +127,9 @@
     </div>
   </main>
 
-  <script src="js/engine.js?v=11.9"></script>
-  <script src="js/engine-sports.js?v=11.9"></script>
-  <script src="js/api.js?v=11.9"></script>
-  <script src="js/app.js?v=11.9"></script>
+  <script src="js/engine.js?v=12.0"></script>
+  <script src="js/engine-sports.js?v=12.0"></script>
+  <script src="js/api.js?v=12.0"></script>
+  <script src="js/app.js?v=12.0"></script>
 </body>
 </html>

@@ -57,6 +57,12 @@ const Stats = (() => {
           predictedHome: p.predictedHome,
           homeSets: m.homeSets || 0, awaySets: m.awaySets || 0,
           setNum: m.currentSetNum || 0, ts: now,
+          sources: {
+            archive: m.histAgree === true,
+            steam:   m.steamData?.agrees === true,
+            dom:     Math.abs(m.domData?.score || 0) >= 0.3,
+            nn:      m.nnAgrees === true,
+          },
         };
       }
     }
@@ -123,6 +129,7 @@ const App = (() => {
   let _sse            = null;
   let _sseActive      = false;
   const _session      = { active: false, startTs: null, startProfit: null, startTotal: null };
+  const _dupeMap      = new Set();
 
   // ── Score velocity & runs tracking ───────────────────
   function updateScoreTracker(rawEvents) {
@@ -303,6 +310,87 @@ const App = (() => {
     if (changed) render();
   }
 
+  // ── Созревающие сигналы ───────────────────────────────
+  function _warmingHtml() {
+    const warm = [];
+    for (const m of analyzed) {
+      if (!m.isLive || m.bestSignal === 'high' || m.bestSignal === 'medium') continue;
+      if ((m._instab || 0) > 0.42) continue;
+      const hp = m.matchWinHomeProb / 100, ap = m.matchWinAwayProb / 100;
+      const check = (prob, odds, lbl) => {
+        if (!odds || prob < 0.60) return;
+        const evPct = ((prob * (odds - 1)) - (1 - prob)) * 100;
+        if (evPct >= 3.5 && evPct < 6.5) warm.push({ m, label: lbl, prob, evPct, odds });
+      };
+      check(hp, m.w1Odds, m.homeTeam);
+      check(ap, m.w2Odds, m.awayTeam);
+    }
+    if (!warm.length) return '';
+    warm.sort((a, b) => b.evPct - a.evPct);
+    const chips = warm.slice(0, 5).map(w => {
+      const es = w.evPct > 0 ? '+' : '';
+      return `<span class="warm-chip" title="${esc(w.m.homeTeam)} vs ${esc(w.m.awayTeam)}">
+        🔥 ${esc(trunc(w.label, 10))} ${(w.prob*100).toFixed(0)}% · EV ${es}${w.evPct.toFixed(1)}%
+      </span>`;
+    }).join('');
+    return `<div class="warm-inner"><span class="warm-lbl">Созревает:</span>${chips}</div>`;
+  }
+
+  // ── AI-сводка всех сигналов ────────────────────────────
+  async function loadAISummary() {
+    const btn = document.getElementById('ai-summary-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳...'; }
+    const signals = [];
+    for (const m of analyzed) {
+      if (!m.isLive) continue;
+      const top = m.predictions.find(p => p.signal === 'high' || p.signal === 'medium');
+      if (!top) continue;
+      signals.push({
+        match:  `${trunc(m.homeTeam,12)} vs ${trunc(m.awayTeam,12)}`,
+        label:  top.label, odds: top.odds.toFixed(2),
+        evPct:  +top.evPct.toFixed(1), prob: (top.prob*100).toFixed(0),
+        signal: top.signal,
+      });
+    }
+    if (!signals.length) {
+      if (btn) { btn.disabled = false; btn.textContent = '🤖 AI обзор'; }
+      alert('Нет активных сигналов'); return;
+    }
+    try {
+      const url  = `/api/ai-summary?data=${encodeURIComponent(JSON.stringify(signals.slice(0,5)))}`;
+      const data = await (await fetch(url, { cache: 'no-store' })).json();
+      _showAISummary(data, signals.length);
+    } catch (e) { console.error(e); }
+    finally { if (btn) { btn.disabled = false; btn.textContent = '🤖 AI обзор'; } }
+  }
+
+  function _showAISummary(data, count) {
+    const el = document.getElementById('ai-summary-overlay');
+    if (!el) return;
+    el.style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+    el.innerHTML = `<div class="ais-panel" onclick="event.stopPropagation()">
+      <div class="ais-head">
+        <span class="ais-title">🤖 AI обзор · ${count} сигнал${count===1?'':'а'}</span>
+        <button class="ais-close" onclick="document.getElementById('ai-summary-overlay').style.display='none';document.body.style.overflow=''">✕</button>
+      </div>
+      <div class="ais-body">${esc(data.text || '—')}</div>
+      <div class="ais-src">${esc(data.source || '')}</div>
+    </div>`;
+  }
+
+  // ── Дубли игроков ──────────────────────────────────────
+  function _updateDupeMap(matches) {
+    const cnt = {};
+    for (const m of matches) {
+      if (!m.isLive) continue;
+      cnt[m.homeTeam] = (cnt[m.homeTeam] || 0) + 1;
+      cnt[m.awayTeam] = (cnt[m.awayTeam] || 0) + 1;
+    }
+    _dupeMap.clear();
+    for (const [name, n] of Object.entries(cnt)) if (n >= 2) _dupeMap.add(name);
+  }
+
   // ── Сессионный трекер ─────────────────────────────────
   function toggleSession() {
     if (_session.active) {
@@ -400,7 +488,10 @@ const App = (() => {
         return SportsEngine.analyze(e, bankroll);
       return Engine.analyze(e, bankroll, _historyCache[e.id] || null, getOddsMovement(e.id), getScoreData(e.id));
     }).filter(Boolean);
-    if (currentSport === 'tt') fetchHistoryForMatches(analyzed);
+    if (currentSport === 'tt') {
+      fetchHistoryForMatches(analyzed);
+      _updateDupeMap(analyzed);
+    }
     const stats = Stats.processRefresh(analyzed, currentSport);
     updateStatsBar(stats);
     _updateSession(stats);
@@ -1033,6 +1124,12 @@ const App = (() => {
         </div>
         <div class="hri-mid">${esc(h.label)} · @ ${h.odds.toFixed(2)} · ${h.stake}₽</div>
         <div class="hri-res ${isWin?'hri-w':'hri-l'}">${isWin ? '✓ Зашло' : '✗ Не зашло'} <span class="hri-pnl">${h.profit >= 0 ? '+' : ''}${h.profit}₽</span></div>
+        ${!isWin && h.sources ? `<div class="hri-sources">
+          <span class="src-icon ${h.sources.archive?'src-on':'src-off'}" title="Архив">📁</span>
+          <span class="src-icon ${h.sources.steam?'src-on':'src-off'}" title="Умные деньги">⚡</span>
+          <span class="src-icon ${h.sources.dom?'src-on':'src-off'}" title="Доминирование">💪</span>
+          <span class="src-icon ${h.sources.nn?'src-on':'src-off'}" title="Нейросеть">🧠</span>
+        </div>` : ''}
       </div>`;
     }).join('');
 
@@ -1229,6 +1326,8 @@ const App = (() => {
       return;
     }
     grid.innerHTML = list.map(renderCard).join('');
+    const warmEl = document.getElementById('warming-strip');
+    if (warmEl) { const wh = _warmingHtml(); warmEl.innerHTML = wh; warmEl.style.display = wh ? 'flex' : 'none'; }
     _renderExpress();
   }
 
@@ -1472,6 +1571,12 @@ const App = (() => {
       ? `<span class="card-status status-live"><span class="live-dot-small"></span>LIVE</span>`
       : `<span class="card-status status-pre">СКОРО</span>`;
 
+    const dupeHome = _dupeMap.has(m.homeTeam);
+    const dupeAway = _dupeMap.has(m.awayTeam);
+    const dupeWarnHtml = (dupeHome || dupeAway) && m.isLive
+      ? `<div class="dupe-warn">⚠️ ${esc(trunc((dupeHome ? m.homeTeam : m.awayTeam), 14))} играет в нескольких матчах — данные могут быть дублированы</div>`
+      : '';
+
     const sportIcon = SPORT_META[sport]?.icon || '';
 
     return `
@@ -1482,6 +1587,7 @@ const App = (() => {
           <span class="card-tournament">${sportIcon} ${esc(m.tournament)}</span>
           ${statusBadge}
         </div>
+        ${dupeWarnHtml}
         <div class="scoreboard">
           <div class="sb-player home">
             <span class="sb-name ${homeWin ? 'winning' : ''}">${esc(m.homeTeam)}</span>
@@ -1596,5 +1702,6 @@ const App = (() => {
            toggleNotifications, openDetailView, closeDetailView,
            openHistory, closeHistory, exportHistoryCsv: _exportHistoryCsv,
            toggleSession,
-           openExpress, closeExpress, setExpressLegs };
+           openExpress, closeExpress, setExpressLegs,
+           loadAISummary };
 })();

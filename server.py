@@ -1131,6 +1131,40 @@ def _rule_analysis(p1, p2, homeProb, ev, stats):
     return ' '.join(parts)
 
 
+def get_ai_summary(signals):
+    key = 'sum_' + '_'.join(s.get('match', '')[:12] for s in signals[:3])
+    now = time.time()
+    with _PLAYER_LOCK:
+        c = _AI_CACHE.get(key)
+        if c and now - c['ts'] < 60:
+            return c['data']
+    lines = []
+    for i, s in enumerate(signals[:5], 1):
+        ev_str = f"+{s['evPct']:.1f}" if s.get('evPct', 0) > 0 else f"{s.get('evPct', 0):.1f}"
+        lines.append(f"{i}. {s.get('match','?')} → {s.get('label','?')} @{s.get('odds','?')} (EV {ev_str}%, {s.get('prob','?')}% вер.)")
+    signals_text = '\n'.join(lines)
+    if GROQ_API_KEY:
+        try:
+            prompt = (f"Ты аналитик ставок на настольный теннис. Активные сигналы прямо сейчас:\n\n"
+                      f"{signals_text}\n\n"
+                      f"Дай краткий обзор (3-4 предложения): какой сигнал самый перспективный, "
+                      f"на что обратить внимание, есть ли риски. Будь конкретным.")
+            text   = groq_chat(prompt)
+            result = {'text': text, 'source': 'Llama-3.3-70b (Groq)', 'ok': True}
+        except Exception as ex:
+            print(f'[groq-summary] {ex}')
+            best   = signals[0]
+            result = {'text': f"Лучший сигнал: {best.get('label','?')} ({best.get('match','?')}), EV {best.get('evPct',0):.1f}%. Всего активных: {len(signals)}.",
+                      'source': 'Правила', 'ok': True}
+    else:
+        best   = signals[0]
+        result = {'text': f"Лучший сигнал: {best.get('label','?')} ({best.get('match','?')}), EV {best.get('evPct',0):.1f}%. Groq не настроен.",
+                  'source': 'Правила', 'ok': True}
+    with _PLAYER_LOCK:
+        _AI_CACHE[key] = {'data': result, 'ts': now}
+    return result
+
+
 def get_ai_analysis(p1, p2, score, homeProb, ev, w1, w2, stats):
     key = f'{p1}||{p2}||{score}'
     now = time.time()
@@ -1181,6 +1215,8 @@ class Handler(SimpleHTTPRequestHandler):
             self._api()
         elif self.path.startswith('/api/player-stats'):
             self._player_stats_api()
+        elif self.path.startswith('/api/ai-summary'):
+            self._ai_summary_api()
         elif self.path.startswith('/api/ai-analysis'):
             self._ai_api()
         elif self.path.startswith('/api/elo-stats'):
@@ -1254,6 +1290,19 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-cache')
         self.end_headers()
         self.wfile.write(body)
+
+    def _ai_summary_api(self):
+        try:
+            qs       = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            data_str = qs.get('data', ['[]'])[0]
+            signals  = json.loads(urllib.parse.unquote(data_str))
+            if not signals:
+                self._json_resp(200, {'text': 'Нет сигналов для анализа', 'source': 'info'}); return
+            result = get_ai_summary(signals)
+            self._json_resp(200, result)
+        except Exception as ex:
+            print(f'[ai-summary] {ex}')
+            self._json_resp(500, {'error': str(ex), 'text': 'Ошибка сервера', 'source': ''})
 
     def _ai_api(self):
         try:
