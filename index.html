@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Sports Live — Прогнозы в лайве</title>
-  <link rel="stylesheet" href="css/style.css?v=11.8" />
+  <link rel="stylesheet" href="css/style.css?v=11.9" />
 </head>
 <body>
   <header>
@@ -73,6 +73,9 @@
       <button class="btn-session" id="session-btn" onclick="App.toggleSession()">
         ⏱ Сессия
       </button>
+      <button class="btn-express" onclick="App.openExpress()">
+        🎲 Экспресс
+      </button>
       <label>Фильтр:</label>
       <select id="filter-select" onchange="App.render()">
         <option value="all">Все матчи</option>
@@ -95,6 +98,9 @@
   <!-- Ladder panel -->
   <div id="ladder-panel" style="display:none"></div>
 
+  <!-- Express panel -->
+  <div id="express-panel" style="display:none"></div>
+
   <!-- History overlay -->
   <div id="history-overlay" class="detail-overlay" style="display:none" onclick="App.closeHistory()">
     <div id="history-panel" class="detail-panel" onclick="event.stopPropagation()"></div>
@@ -112,9 +118,9 @@
     </div>
   </main>
 
-  <script src="js/engine.js?v=11.8"></script>
-  <script src="js/engine-sports.js?v=11.8"></script>
-  <script src="js/api.js?v=11.8"></script>
-  <script src="js/app.js?v=11.8"></script>
+  <script src="js/engine.js?v=11.9"></script>
+  <script src="js/engine-sports.js?v=11.9"></script>
+  <script src="js/api.js?v=11.9"></script>
+  <script src="js/app.js?v=11.9"></script>
 </body>
 </html>

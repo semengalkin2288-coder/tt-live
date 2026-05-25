@@ -841,6 +841,101 @@ const App = (() => {
     } catch {}
   }
 
+  // ── Экспресс (парлей) ────────────────────────────────────
+  let _expressLegs = 3;
+
+  function openExpress() {
+    const panel = document.getElementById('express-panel');
+    if (!panel) return;
+    if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+    _renderExpress();
+  }
+
+  function closeExpress() {
+    const panel = document.getElementById('express-panel');
+    if (panel) panel.style.display = 'none';
+  }
+
+  function setExpressLegs(n) { _expressLegs = n; _renderExpress(); }
+
+  function _renderExpress() {
+    const panel = document.getElementById('express-panel');
+    if (!panel || panel.style.display === 'none') return;
+    panel.style.display = 'block';
+    panel.innerHTML = _expressHtml(_expressLegs);
+  }
+
+  function _expressHtml(maxLegs) {
+    const bankroll = getBankroll();
+    const allLegs  = [];
+    for (const m of analyzed) {
+      if (!m.isLive) continue;
+      const hp = m.predictions.filter(p => p.signal === 'high');
+      if (!hp.length) continue;
+      const best = hp.reduce((a, b) => a.evPct > b.evPct ? a : b);
+      allLegs.push({ match: m, pred: best });
+    }
+    allLegs.sort((a, b) => b.pred.evPct - a.pred.evPct);
+    const legs  = allLegs.slice(0, maxLegs);
+    const avail = allLegs.length;
+
+    const tabsHtml = [2, 3].map(n =>
+      `<button class="exp-tab${_expressLegs === n ? ' exp-tab-on' : ''}" onclick="App.setExpressLegs(${n})">${n} события</button>`
+    ).join('');
+    const closeBtn = `<button class="express-close" onclick="App.closeExpress()">✕</button>`;
+
+    if (legs.length < 2) {
+      return `<div class="express-inner">
+        <div class="express-header"><span class="express-title">🎲 Экспресс</span>${closeBtn}</div>
+        <div class="express-empty">⚠️ Нужно минимум 2 HIGH-сигнала одновременно.<br>Сейчас доступно: ${avail}</div>
+      </div>`;
+    }
+
+    const combOdds = legs.reduce((a, l) => a * l.pred.odds, 1);
+    const combProb = legs.reduce((a, l) => a * l.pred.prob, 1);
+    const combEv   = (combProb * (combOdds - 1) - (1 - combProb)) * 100;
+    const b = combOdds - 1, q = 1 - combProb;
+    const kRaw  = Math.max(0, (b * combProb - q) / b);
+    const stake = Math.max(50, Math.round(kRaw * 0.12 * bankroll / 10) * 10);
+    const win   = Math.round(stake * b);
+    const evSign = combEv > 0 ? '+' : '';
+    const evCls  = combEv >= 5 ? 'sh-green' : combEv >= 0 ? '' : 'sh-red';
+
+    const legsHtml = legs.map((l, i) => {
+      const { match: m, pred: p } = l;
+      const es = p.evPct > 0 ? '+' : '';
+      return `<div class="exp-leg">
+        <span class="exp-num">${i + 1}</span>
+        <div class="exp-info">
+          <div class="exp-match">${esc(trunc(m.homeTeam, 11))} vs ${esc(trunc(m.awayTeam, 11))}</div>
+          <div class="exp-pred">${esc(p.label)}</div>
+          <div class="exp-meta">${(p.prob*100).toFixed(0)}% вер. · EV ${es}${p.evPct.toFixed(1)}%</div>
+        </div>
+        <span class="exp-odds-chip">@${p.odds.toFixed(2)}</span>
+      </div>`;
+    }).join('');
+
+    return `<div class="express-inner">
+      <div class="express-header">
+        <span class="express-title">🎲 Экспресс × ${combOdds.toFixed(2)}</span>
+        <div class="exp-tabs">${tabsHtml}</div>
+        ${closeBtn}
+      </div>
+      <div class="express-legs">${legsHtml}</div>
+      <div class="express-total">
+        <div class="exp-row"><span class="exp-lbl">Итоговый кф</span><span class="exp-combo-val">${combOdds.toFixed(2)}</span></div>
+        <div class="exp-row"><span class="exp-lbl">Вероятность прохода</span><span>${(combProb*100).toFixed(1)}%</span></div>
+        <div class="exp-row"><span class="exp-lbl">EV экспресса</span><span class="${evCls}">${evSign}${combEv.toFixed(1)}%</span></div>
+      </div>
+      <div class="exp-stake-row">
+        <span class="exp-slbl">Kelly 12% →</span>
+        <span class="exp-stake">${stake}₽</span>
+        <span class="exp-pot">при победе +${win}₽</span>
+      </div>
+      ${combEv < 0 ? '<div class="exp-warn">⚠️ Отрицательный EV — высокий риск</div>' : ''}
+    </div>`;
+  }
+
   // ── История ставок ────────────────────────────────────
   function openHistory() {
     const overlay = document.getElementById('history-overlay');
@@ -1134,6 +1229,7 @@ const App = (() => {
       return;
     }
     grid.innerHTML = list.map(renderCard).join('');
+    _renderExpress();
   }
 
   // ── Player stats / history block ─────────────────────
@@ -1499,5 +1595,6 @@ const App = (() => {
            openLadder, startLadder, ladderSettle, changeLadderPick, closeLadder, resetLadder,
            toggleNotifications, openDetailView, closeDetailView,
            openHistory, closeHistory, exportHistoryCsv: _exportHistoryCsv,
-           toggleSession };
+           toggleSession,
+           openExpress, closeExpress, setExpressLegs };
 })();

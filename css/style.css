@@ -1155,4 +1155,92 @@ header {
   border-color: rgba(46,204,113,0.30);
   color: #2ecc71;
 }
+
+/* ====================================================== */
+/* EXPRESS (PARLAY)                                       */
+/* ====================================================== */
+#express-panel {
+  margin: 0 14px 10px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.express-inner { padding: 0; }
+.express-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
+  background: rgba(255,255,255,0.02);
+}
+.express-title { font-size: 0.88rem; font-weight: 700; flex: 1; }
+.exp-tabs { display: flex; gap: 4px; }
+.exp-tab {
+  background: rgba(255,255,255,0.06); border: 1px solid var(--border);
+  color: var(--text3); border-radius: 5px; padding: 3px 9px;
+  font-size: 0.73rem; cursor: pointer;
+}
+.exp-tab:hover  { background: rgba(255,255,255,0.12); }
+.exp-tab-on     { background: rgba(46,204,113,0.15); border-color: rgba(46,204,113,0.3); color: #2ecc71; }
+.express-close  { background: none; border: none; color: var(--text3); font-size: 1rem; cursor: pointer; padding: 2px 4px; }
+.express-close:hover { color: var(--text); }
+
+.express-empty {
+  padding: 18px 14px; color: var(--text3); font-size: 0.82rem;
+  text-align: center; line-height: 1.6;
+}
+
+.express-legs { padding: 6px 0; }
+.exp-leg {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 14px; border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.exp-leg:last-child { border-bottom: none; }
+.exp-num {
+  width: 20px; height: 20px; border-radius: 50%;
+  background: rgba(46,204,113,0.2); color: #2ecc71;
+  font-size: 0.72rem; font-weight: 700;
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.exp-info { flex: 1; min-width: 0; }
+.exp-match { font-size: 0.78rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.exp-pred  { font-size: 0.74rem; color: var(--text2); }
+.exp-meta  { font-size: 0.68rem; color: var(--text3); }
+.exp-odds-chip {
+  font-size: 0.82rem; font-weight: 700; color: var(--yellow);
+  background: rgba(241,196,15,0.1); border-radius: 5px;
+  padding: 3px 7px; flex-shrink: 0;
+}
+
+.express-total {
+  padding: 8px 14px; border-top: 1px solid var(--border);
+  background: rgba(255,255,255,0.02);
+}
+.exp-row {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 0.78rem; padding: 2px 0;
+}
+.exp-lbl  { color: var(--text3); }
+.exp-combo-val { font-size: 1.0rem; font-weight: 800; color: var(--yellow); }
+
+.exp-stake-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px; border-top: 1px solid var(--border);
+  background: rgba(46,204,113,0.04);
+}
+.exp-slbl  { font-size: 0.76rem; color: var(--text3); }
+.exp-stake { font-size: 1.1rem; font-weight: 800; color: #2ecc71; }
+.exp-pot   { font-size: 0.76rem; color: var(--text2); margin-left: auto; }
+.exp-warn  {
+  padding: 6px 14px; font-size: 0.74rem; color: var(--yellow);
+  background: rgba(241,196,15,0.06); border-top: 1px solid rgba(241,196,15,0.15);
+}
+
+.btn-express {
+  background: rgba(241,196,15,0.10);
+  border: 1px solid rgba(241,196,15,0.25);
+  color: var(--yellow); border-radius: 6px;
+  padding: 5px 10px; font-size: 0.8rem; cursor: pointer;
+  transition: background 0.15s;
+}
+.btn-express:hover { background: rgba(241,196,15,0.20); }
 .cal-cnt { font-size: 0.68rem; color: var(--text3); min-width: 30px; }
