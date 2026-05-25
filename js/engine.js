@@ -466,7 +466,7 @@ const Engine = (() => {
     const momentum = Math.max(5, Math.min(95, Math.round(rawMom)));
 
     // ── 8. Сборка прогнозов ───────────────────────────────
-    const preds = [];
+    let preds = [];
 
     function addPred(tag, market, label, prob, mktProb, odds, evPct, ph) {
       if (!odds || odds <= 1.05) return;
