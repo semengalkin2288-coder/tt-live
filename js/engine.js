@@ -263,7 +263,7 @@ const Engine = (() => {
   // ── Уровень сигнала ───────────────────────────────────────
   // HIGH = математика + минимум 1 из: архив / стим / доминирование / нейросеть
   function signalLevel(evPct, prob, instab, histAgree, histStrength, steamAgrees, domScore, nnAgrees) {
-    if (instab > 0.6) return 'none';
+    if (instab > 0.48) return 'none';
 
     const archiveOK = histAgree  === true && histStrength >= 0.22;
     const steamOK   = steamAgrees === true;
@@ -271,14 +271,15 @@ const Engine = (() => {
     const nnOK      = nnAgrees   === true;
 
     const confirmations = (archiveOK?1:0) + (steamOK?1:0) + (domOK?1:0) + (nnOK?1:0);
-    if (evPct >= 5.5 && prob >= 0.63 && instab <= 0.25 && confirmations >= 1) return 'high';
 
-    // MEDIUM: хорошая математика, нет противоречий архива
-    if (evPct >= 3 && prob >= 0.58 && instab <= 0.38 && histAgree !== false) return 'medium';
-    if (evPct >= 4.5 && prob >= 0.61 && instab <= 0.3) return 'medium';
+    // HIGH: сильный EV + высокая вероятность + хотя бы 1 подтверждение
+    if (evPct >= 6.5 && prob >= 0.65 && instab <= 0.22 && confirmations >= 1) return 'high';
+    if (evPct >= 8.0 && prob >= 0.64 && instab <= 0.25) return 'high';
 
-    // LOW: слабый сигнал
-    if (evPct >= 1.5 && prob >= 0.55 && instab <= 0.5) return 'low';
+    // MEDIUM: хорошая математика + подтверждение
+    if (evPct >= 4.5 && prob >= 0.63 && instab <= 0.30 && confirmations >= 1) return 'medium';
+    if (evPct >= 5.5 && prob >= 0.64 && instab <= 0.26) return 'medium';
+
     return 'none';
   }
 
@@ -344,8 +345,8 @@ const Engine = (() => {
     const matchModel = matchWinProb(homeSets, awaySets, setWinFinal, stw);
     const mktProbs   = noVigProb(w1Odds, w2Odds);
 
-    // Финальная вероятность: блендинг модели и рынка
-    const modelWeight = Math.min(0.70, 0.40 + doneSets.length * 0.12);
+    // Финальная вероятность: блендинг модели и рынка (доверяем модели больше)
+    const modelWeight = Math.min(0.82, 0.62 + doneSets.length * 0.08);
     let trueHome = Math.max(0.05, Math.min(0.95,
       modelWeight * matchModel + (1 - modelWeight) * mktProbs.home
     ));
@@ -461,6 +462,10 @@ const Engine = (() => {
     function addPred(tag, market, label, prob, mktProb, odds, evPct, ph) {
       if (!odds || odds <= 1.05) return;
       if (!isActionable(homeSets, awaySets)) return;
+      // Не прогнозируем в самом начале матча
+      if (setsPlayed === 0 && (currentHomePts + currentAwayPts) < 8) return;
+      // Требуем ощутимое расхождение с рынком
+      if (mktProb !== null && mktProb !== undefined && Math.abs(prob - mktProb) < 0.07) return;
       const sig = signalLevel(evPct, prob, instab, hist.agree, hist.strength, steam.agrees, domData.score, nnAgrees);
       if (sig === 'none') return;
       preds.push({
@@ -471,10 +476,9 @@ const Engine = (() => {
     }
 
     // А) Победитель матча
-    // Требуем минимальное расхождение модели с рынком для достоверности
-    if (trueHome >= 0.57) {
+    if (trueHome >= 0.62) {
       addPred('match', 'Победитель', homeTeam, trueHome, mktProbs.home, effW1, evM1, true);
-    } else if (trueAway >= 0.57) {
+    } else if (trueAway >= 0.62) {
       addPred('match', 'Победитель', awayTeam, trueAway, mktProbs.away, effW2, evM2, false);
     }
 
@@ -483,10 +487,10 @@ const Engine = (() => {
       const mktT = noVigProb(totalOverOdds, totalUnderOdds);
       const evO  = ev(totalOverProb, totalOverOdds);
       const evU  = ev(1-totalOverProb, totalUnderOdds);
-      if (totalOverProb >= 0.57) {
+      if (totalOverProb >= 0.62) {
         addPred('total', `Тотал очков (${totalLine})`, `Больше ${totalLine}`,
           totalOverProb, mktT.home, totalOverOdds, evO, null);
-      } else if (1-totalOverProb >= 0.57) {
+      } else if (1-totalOverProb >= 0.62) {
         addPred('total', `Тотал очков (${totalLine})`, `Меньше ${totalLine}`,
           1-totalOverProb, mktT.away, totalUnderOdds, evU, null);
       }
@@ -497,11 +501,11 @@ const Engine = (() => {
       const awayHdp = -(hdpLine || 0);
       const hdpSign = (hdpLine || 0) > 0 ? '+' : '';
       const mktH = noVigProb(hdpHomeOdds, hdpAwayOdds);
-      if (hdpHomeProb >= 0.57) {
+      if (hdpHomeProb >= 0.62) {
         addPred('handicap', 'Фора по сетам',
           `${homeTeam} (${hdpSign}${hdpLine})`,
           hdpHomeProb, mktH.home, hdpHomeOdds, ev(hdpHomeProb, hdpHomeOdds), true);
-      } else if (hdpAwayProb >= 0.57) {
+      } else if (hdpAwayProb >= 0.62) {
         const aSign = awayHdp > 0 ? '+' : '';
         addPred('handicap', 'Фора по сетам',
           `${awayTeam} (${aSign}${awayHdp})`,
