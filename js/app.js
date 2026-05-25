@@ -939,7 +939,8 @@ const App = (() => {
     const panel = document.getElementById('express-panel');
     if (!panel) return;
     if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
-    _renderExpress();
+    panel.style.display = 'block';
+    panel.innerHTML = _expressHtml(_expressLegs);
   }
 
   function closeExpress() {
@@ -952,7 +953,6 @@ const App = (() => {
   function _renderExpress() {
     const panel = document.getElementById('express-panel');
     if (!panel || panel.style.display === 'none') return;
-    panel.style.display = 'block';
     panel.innerHTML = _expressHtml(_expressLegs);
   }
 

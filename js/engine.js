@@ -469,7 +469,7 @@ const Engine = (() => {
     let preds = [];
 
     function addPred(tag, market, label, prob, mktProb, odds, evPct, ph) {
-      if (!odds || odds <= 1.05) return;
+      if (!odds || odds < 1.70) return;
       if (!isActionable(homeSets, awaySets)) return;
       // Не прогнозируем в самом начале матча
       if (setsPlayed === 0 && (currentHomePts + currentAwayPts) < 8) return;
