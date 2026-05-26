@@ -565,6 +565,106 @@ const App = (() => {
     }
   }
 
+  // ── Info score — сколько данных у матча ──────────────
+  function _infoScore(m) {
+    if (!m.isLive) return 0;
+    let s = 0;
+    const h = _historyCache[m.id];
+    if (h && ((h.p1?.matches >= 2) || (h.p2?.matches >= 2))) s += 3;
+    if (h?.elo && (h.elo.p1 !== 1500 || h.elo.p2 !== 1500)) s += 2;
+    if (m.nnProb !== null && m.nnProb !== undefined && Math.abs(m.nnProb - 50) >= 7) s += 2;
+    if (m.steamData?.agrees !== undefined && m.steamData.agrees !== null) s += 1;
+    if (m.domData && (m.doneSets?.length || 0) >= 1) s += 1;
+    s += (m.homeSets + m.awaySets) * 2;
+    if (m.predictions.some(p => p.signal === 'high'))   s += 5;
+    else if (m.predictions.some(p => p.signal === 'medium')) s += 2;
+    return s;
+  }
+
+  // ── Полный анализ карточки ────────────────────────────
+  function _cardPredHtml(m) {
+    const favHome  = m.matchWinHomeProb >= m.matchWinAwayProb;
+    const favTeam  = favHome ? m.homeTeam : m.awayTeam;
+    const favProb  = favHome ? m.matchWinHomeProb : m.matchWinAwayProb;
+    const h        = _historyCache[m.id];
+
+    const sources = [];
+    if (m.histAgree === true)  sources.push({ ok: true,  txt: `Архив: ${trunc(favTeam,13)} побеждает в схожих матчах` });
+    else if (m.histAgree === false) sources.push({ ok: false, txt: 'Архив противоречит прогнозу' });
+
+    if (m.steamData?.agrees === true)  sources.push({ ok: true,  txt: 'Умные деньги идут на фаворита' });
+    else if (m.steamData?.agrees === false) sources.push({ ok: false, txt: 'Умные деньги против фаворита' });
+
+    if (m.domData && Math.abs(m.domData?.score || 0) >= 0.3) {
+      const df = (m.domData.score > 0) === favHome ? favTeam : (favHome ? m.awayTeam : m.homeTeam);
+      sources.push({ ok: (m.domData.score > 0) === favHome, txt: `Доминирование: ${trunc(df,13)} выигрывает очки убедительно` });
+    }
+
+    if (m.nnProb !== null && m.nnProb !== undefined && Math.abs(m.nnProb - 50) >= 7) {
+      const nnFav = m.nnProb > 50 ? m.homeTeam : m.awayTeam;
+      sources.push({ ok: m.nnAgrees === true, txt: `Нейросеть: ${trunc(nnFav,13)} ${Math.max(m.nnProb, 100 - m.nnProb).toFixed(0)}%` });
+    }
+
+    if (h?.elo && (h.elo.p1 !== 1500 || h.elo.p2 !== 1500)) {
+      const eloFav = h.elo.p1 > h.elo.p2 ? m.homeTeam : m.awayTeam;
+      sources.push({ ok: (h.elo.p1 > h.elo.p2) === favHome, txt: `Elo: ${trunc(eloFav,13)} рейтинг выше (${Math.max(h.elo.p1,h.elo.p2)})` });
+    }
+
+    if (h?.h2h && h.h2h.total >= 2) {
+      const h2hHome = h.h2h.p1Wins > h.h2h.p2Wins;
+      sources.push({ ok: h2hHome === favHome, txt: `H2H: ${h.h2h.p1Wins}–${h.h2h.p2Wins} в пользу ${trunc(h2hHome ? m.homeTeam : m.awayTeam, 12)}` });
+    }
+
+    const okCount  = sources.filter(s => s.ok).length;
+    const confLabel = okCount >= 4 ? '🔒 Высокая уверенность'
+                    : okCount >= 2 ? '📊 Средняя уверенность'
+                    : '⚠️ Мало данных';
+    const confCls   = okCount >= 4 ? 'cp-conf-high' : okCount >= 2 ? 'cp-conf-med' : 'cp-conf-low';
+
+    const sourcesHtml = sources.length
+      ? sources.map(s =>
+          `<div class="cp-src ${s.ok ? 'cp-src-ok' : 'cp-src-warn'}">${s.ok ? '✅' : '⚠️'} ${esc(s.txt)}</div>`
+        ).join('')
+      : `<div class="cp-src">— Статистика загружается, подождите...</div>`;
+
+    const risks = [];
+    if ((m._instab || 0) > 0.35)              risks.push('нестабильная игра');
+    if (m.histAgree === false)                 risks.push('архив против');
+    if (m.steamData?.agrees === false)         risks.push('умные деньги против');
+    if (_dupeMap.has(m.homeTeam) || _dupeMap.has(m.awayTeam)) risks.push('дубль матчей');
+
+    const riskHtml = risks.length
+      ? `<div class="cp-risks">⚠️ Риски: ${risks.map(r => `<span class="cp-risk">${esc(r)}</span>`).join(' ')}</div>`
+      : `<div class="cp-risks cp-safe">✅ Явных рисков нет</div>`;
+
+    const topPred = m.predictions[0];
+    const betHtml = topPred
+      ? `<div class="cp-bet ${topPred.signal === 'high' ? 'cp-bet-h' : topPred.signal === 'medium' ? 'cp-bet-m' : 'cp-bet-l'}">
+          <div class="cp-bet-sig">${topPred.signal === 'high' ? '🎯 HIGH VALUE' : topPred.signal === 'medium' ? '📊 VALUE' : '🔹 Слабый сигнал'}</div>
+          <div class="cp-bet-lbl">${esc(topPred.market)}: <strong>${esc(topPred.label)}</strong></div>
+          <div class="cp-bet-meta">${(topPred.prob*100).toFixed(0)}% вер. · кф ${topPred.odds.toFixed(2)} · EV ${topPred.evPct>0?'+':''}${topPred.evPct.toFixed(1)}%${topPred.kelly.stake > 0 ? ` · <b>${topPred.kelly.stake}₽</b>` : ''}</div>
+        </div>`
+      : `<div class="cp-no-bet">⏳ Нет уверенного сигнала для ставки</div>`;
+
+    return `<div class="card-pred-panel">
+      <div class="cp-conf ${confCls}">${confLabel} · ${okCount} из ${sources.length} источников подтверждают</div>
+      <div class="cp-favor">🏆 <strong>${esc(trunc(favTeam,18))}</strong> — фаворит ${favProb}%</div>
+      <div class="cp-sources">${sourcesHtml}</div>
+      ${riskHtml}
+      ${betHtml}
+    </div>`;
+  }
+
+  function getCardPrediction(matchId) {
+    const panel = document.getElementById(`cpred-${matchId}`);
+    if (!panel) return;
+    const m = analyzed.find(x => x.id === matchId);
+    if (!m) return;
+    if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+    panel.innerHTML = _cardPredHtml(m);
+    panel.style.display = 'block';
+  }
+
   // ── Best prediction ───────────────────────────────────
   function findBestPrediction() {
     let best = null, bestScore = -Infinity, bestMatch = null;
@@ -572,7 +672,8 @@ const App = (() => {
       if (!m.isLive) continue;
       for (const p of m.predictions) {
         const sigBonus = p.signal === 'high' ? 1000 : p.signal === 'medium' ? 500 : 0;
-        const score = sigBonus + p.evPct * 0.55 + (p.prob * 100) * 0.45;
+        const infoBonus = _infoScore(m) * 3;
+        const score = sigBonus + infoBonus + p.evPct * 0.55 + (p.prob * 100) * 0.45;
         if (score > bestScore) { bestScore = score; best = p; bestMatch = m; }
       }
     }
@@ -588,26 +689,35 @@ const App = (() => {
       return;
     }
     const { pred, match } = result;
-    const evSign   = pred.evPct > 0 ? '+' : '';
-    const sigCls   = pred.signal === 'high' ? 'banner-high' : 'banner-med';
-    const sigIcon  = pred.signal === 'high' ? '🎯' : pred.signal === 'medium' ? '📊' : '🔹';
-    const sigTitle = pred.signal === 'high' ? 'ЛУЧШИЙ ПРОГНОЗ — HIGH VALUE'
-                   : pred.signal === 'medium' ? 'ЛУЧШИЙ ПРОГНОЗ — VALUE'
-                   : 'ЛУЧШИЙ ПРОГНОЗ СЕЙЧАС';
+    const evSign  = pred.evPct > 0 ? '+' : '';
+    const sigCls  = pred.signal === 'high' ? 'banner-high' : 'banner-med';
+    const sigIcon = pred.signal === 'high' ? '🎯' : '📊';
+    const infoS   = _infoScore(match);
+    const infoLbl = infoS >= 12 ? '🔒 Много данных' : infoS >= 7 ? '📊 Средне данных' : '⚠️ Мало данных';
     banner.style.display = 'block';
     banner.innerHTML = `
       <div class="best-banner-inner ${sigCls}">
-        <span class="best-icon">${sigIcon}</span>
-        <div class="best-info">
-          <span class="best-title">${sigTitle}</span>
-          <span class="best-match">${esc(match.homeTeam)} vs ${esc(match.awayTeam)}</span>
-          <span class="best-pred">${esc(pred.market)} — <strong>${esc(pred.label)}</strong></span>
-          <span class="best-meta">
-            ${(pred.prob*100).toFixed(0)}% вероятность · кф ${pred.odds.toFixed(2)} · EV ${evSign}${pred.evPct.toFixed(1)}%
-            ${pred.kelly.stake > 0 ? `· Kelly: <strong>${pred.kelly.stake}₽</strong>` : ''}
-          </span>
+        <div class="best-top-row">
+          <span class="best-icon">${sigIcon}</span>
+          <span class="best-title">${pred.signal === 'high' ? 'ЛУЧШИЙ ПРОГНОЗ — HIGH VALUE' : 'ЛУЧШИЙ ПРОГНОЗ — VALUE'}</span>
+          <span class="best-info-badge">${infoLbl}</span>
+          <button class="best-close" onclick="App.closeBestBanner()">✕</button>
         </div>
-        <button class="best-close" onclick="App.closeBestBanner()">✕</button>
+        <div class="best-match-row">
+          <span class="best-match">${esc(match.homeTeam)} vs ${esc(match.awayTeam)}</span>
+          <span class="best-score">${match.homeSets}:${match.awaySets}</span>
+        </div>
+        <div class="best-pred-row">
+          <span class="best-pred">${esc(pred.market)} — <strong>${esc(pred.label)}</strong></span>
+          <span class="best-odds">@ ${pred.odds.toFixed(2)}</span>
+        </div>
+        <div class="best-meta-row">
+          <span>${(pred.prob*100).toFixed(0)}% вер.</span>
+          <span>EV ${evSign}${pred.evPct.toFixed(1)}%</span>
+          ${pred.kelly.stake > 0 ? `<span>Kelly: <strong>${pred.kelly.stake}₽</strong></span>` : ''}
+          <span>Уверенность: ${match.topConf}%</span>
+        </div>
+        <div class="best-analysis">${_cardPredHtml(match)}</div>
       </div>`;
     highlightedId = match.id;
     render();
@@ -1567,6 +1677,10 @@ const App = (() => {
       <button class="btn-ai" id="aibtn-${m.id}" onclick="App.loadAI('${m.id}', this)">🤖 AI анализ</button>
       <div class="ai-result" id="ai-${m.id}" style="display:none"></div>` : '';
 
+    const predBtnHtml = m.isLive ? `
+      <button class="btn-get-pred" onclick="App.getCardPrediction('${m.id}')">📊 Получить прогноз</button>
+      <div id="cpred-${m.id}" style="display:none"></div>` : '';
+
     const statusBadge = m.isLive
       ? `<span class="card-status status-live"><span class="live-dot-small"></span>LIVE</span>`
       : `<span class="card-status status-pre">СКОРО</span>`;
@@ -1628,6 +1742,7 @@ const App = (() => {
           ${predsHtml}
         </div>
         ${kellyHtml}
+        ${predBtnHtml}
         ${aiHtml}
         <div class="card-bottom-row">${leonBtn}${detailBtn}</div>
       </div>
@@ -1703,5 +1818,5 @@ const App = (() => {
            openHistory, closeHistory, exportHistoryCsv: _exportHistoryCsv,
            toggleSession,
            openExpress, closeExpress, setExpressLegs,
-           loadAISummary };
+           loadAISummary, getCardPrediction };
 })();

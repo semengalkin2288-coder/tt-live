@@ -1353,3 +1353,117 @@ header {
 .src-icon.src-on  { color: #e74c3c; border-color: rgba(231,76,60,0.3); background: rgba(231,76,60,0.08); }
 .src-icon.src-off { color: var(--text3); opacity: .5; }
 .cal-cnt { font-size: 0.68rem; color: var(--text3); min-width: 30px; }
+/* ====================================================== */
+/* CARD PREDICTION PANEL                                  */
+/* ====================================================== */
+
+.btn-get-pred {
+  width: 100%; padding: 9px;
+  background: linear-gradient(135deg, rgba(56,189,248,0.10), rgba(34,197,94,0.07));
+  border: 1px solid rgba(56,189,248,0.25);
+  color: var(--blue); border-radius: 8px;
+  font-size: 0.85rem; font-weight: 600; cursor: pointer;
+  transition: all .15s; margin-top: 6px; letter-spacing: .02em;
+}
+.btn-get-pred:hover { background: rgba(56,189,248,0.18); border-color: rgba(56,189,248,0.5); }
+
+.card-pred-panel {
+  margin-top: 8px; border-radius: 8px;
+  border: 1px solid var(--border2);
+  background: var(--bg3);
+  overflow: hidden;
+  animation: fadeIn .2s ease;
+}
+@keyframes fadeIn { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:translateY(0); } }
+
+.cp-conf {
+  padding: 7px 12px; font-size: 0.78rem; font-weight: 700;
+  letter-spacing: .03em; border-bottom: 1px solid var(--border);
+}
+.cp-conf-high { background: rgba(34,197,94,0.12);  color: #22c55e; }
+.cp-conf-med  { background: rgba(245,158,11,0.10); color: #f59e0b; }
+.cp-conf-low  { background: rgba(239,68,68,0.08);  color: #ef4444; }
+
+.cp-favor {
+  padding: 7px 12px; font-size: 0.82rem; color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+.cp-favor strong { color: #fff; }
+
+.cp-sources { padding: 6px 10px; display: flex; flex-direction: column; gap: 3px; }
+
+.cp-src {
+  font-size: 0.78rem; padding: 3px 6px; border-radius: 4px;
+  color: var(--text);
+}
+.cp-src-ok   { color: #86efac; }
+.cp-src-warn { color: #fca5a5; }
+
+.cp-risks {
+  padding: 5px 12px; font-size: 0.75rem;
+  border-top: 1px solid var(--border);
+  color: var(--text3);
+}
+.cp-safe { color: #4ade80; }
+.cp-risk {
+  display: inline-block; margin: 1px 3px;
+  background: rgba(239,68,68,0.10); border: 1px solid rgba(239,68,68,0.2);
+  color: #ef4444; border-radius: 3px; padding: 1px 5px;
+}
+
+.cp-bet {
+  margin: 8px 10px 10px; padding: 9px 11px; border-radius: 7px;
+}
+.cp-bet-h { background: rgba(34,197,94,0.10);  border: 1px solid rgba(34,197,94,0.3); }
+.cp-bet-m { background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.25); }
+.cp-bet-l { background: rgba(99,113,137,0.10); border: 1px solid rgba(99,113,137,0.2); }
+
+.cp-bet-sig  { font-size: 0.72rem; font-weight: 700; letter-spacing: .04em; color: var(--text2); margin-bottom: 3px; }
+.cp-bet-lbl  { font-size: 0.85rem; color: var(--text); margin-bottom: 3px; }
+.cp-bet-lbl strong { color: #fff; }
+.cp-bet-meta { font-size: 0.78rem; color: var(--text2); }
+.cp-bet-meta b { color: #22c55e; font-size: 0.9rem; }
+
+.cp-no-bet {
+  margin: 8px 10px 10px; padding: 8px 11px;
+  border-radius: 6px; font-size: 0.8rem; color: var(--text3);
+  border: 1px dashed var(--border2); text-align: center;
+}
+
+/* ====================================================== */
+/* BEST BANNER — EXPANDED WITH ANALYSIS                   */
+/* ====================================================== */
+
+.best-top-row {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+}
+.best-info-badge {
+  font-size: 0.72rem; padding: 2px 7px; border-radius: 10px;
+  background: rgba(255,255,255,0.06); color: var(--text2);
+  margin-left: auto;
+}
+.best-match-row {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 4px;
+}
+.best-score {
+  font-size: 1rem; font-weight: 700; color: var(--text); opacity: .7;
+}
+.best-pred-row {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 4px;
+}
+.best-odds {
+  font-size: 0.9rem; font-weight: 700; color: #f59e0b;
+}
+.best-meta-row {
+  display: flex; gap: 12px; flex-wrap: wrap;
+  font-size: 0.78rem; color: var(--text2); margin-bottom: 8px;
+}
+.best-meta-row strong { color: #22c55e; }
+.best-analysis {
+  border-top: 1px solid rgba(255,255,255,0.08); padding-top: 6px;
+}
+.best-analysis .card-pred-panel {
+  border: none; background: transparent; margin: 0;
+  animation: none;
+}
