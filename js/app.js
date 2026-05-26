@@ -1688,19 +1688,6 @@ const App = (() => {
     const isGoalSport = sport === 'football' || sport === 'hockey';
     const isTT = sport === 'tt';
 
-    const homeWin = (m.homeSets || m.homeScore || 0) > (m.awaySets || m.awayScore || 0);
-    const awayWin = (m.awaySets || m.awayScore || 0) > (m.homeSets || m.homeScore || 0);
-
-    const stripCls = m.bestSignal === 'high'  ? 'strip-green'
-                   : m.bestSignal === 'medium' ? 'strip-yellow'
-                   : m.bestSignal === 'low'    ? 'strip-blue'
-                   : 'strip-grey';
-
-    const cardCls = [
-      m.bestSignal === 'high'   ? 'sig-strong' : m.bestSignal === 'medium' ? 'sig-medium' : '',
-      m.id === highlightedId ? 'card-highlighted' : '',
-    ].filter(Boolean).join(' ');
-
     const hs  = m.homeSets ?? m.homeScore ?? 0;
     const as_ = m.awaySets ?? m.awayScore ?? 0;
     const homeWin = hs > as_, awayWin = as_ > hs;
