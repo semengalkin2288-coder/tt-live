@@ -532,12 +532,13 @@ const App = (() => {
       try { _processData(JSON.parse(ev.data)); } catch {}
     };
     _sse.onerror = () => {
-      if (!_sseActive) return;
+      const wasActive = _sseActive;
       _sseActive = false;
       if (_sse) { _sse.close(); _sse = null; }
       const tw = document.getElementById('timer-wrap');
       if (tw) tw.innerHTML = `Обновление через <span id="countdown">${REFRESH_SEC}</span>с`;
       resetCountdown();
+      if (!wasActive) refresh();
     };
   }
 
