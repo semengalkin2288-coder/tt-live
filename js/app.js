@@ -655,13 +655,13 @@ const App = (() => {
     </div>`;
   }
 
-  function getCardPrediction(matchId) {
+  function getCardPrediction(matchId, autoOpen) {
     const panel = document.getElementById(`cpred-${matchId}`);
     if (!panel) return;
     const m = analyzed.find(x => x.id === matchId);
     if (!m) return;
-    if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
-    panel.innerHTML = _cardPredHtml(m);
+    if (!autoOpen && panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+    panel.innerHTML = _fullAnalysisHtml(m);
     panel.style.display = 'block';
   }
 
@@ -724,7 +724,8 @@ const App = (() => {
     setTimeout(() => {
       const card = document.querySelector(`[data-id="${match.id}"]`);
       if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }, 100);
+      getCardPrediction(match.id, true);
+    }, 120);
   }
 
   function closeBestBanner() {
@@ -1509,7 +1510,179 @@ const App = (() => {
     </div>`;
   }
 
-  // ── Card ──────────────────────────────────────────────
+  // ── Full analysis panel (opened by button) ───────────
+  function _fullAnalysisHtml(m) {
+    const sport = m.sport || 'tt';
+    const isTT  = sport === 'tt';
+    const isGoalSport = sport === 'football' || sport === 'hockey';
+
+    // Sources / confidence block (reuse existing logic)
+    const favHome  = m.matchWinHomeProb >= m.matchWinAwayProb;
+    const favTeam  = favHome ? m.homeTeam : m.awayTeam;
+    const favProb  = favHome ? m.matchWinHomeProb : m.matchWinAwayProb;
+    const h        = _historyCache[m.id];
+
+    const sources = [];
+    if (m.histAgree === true)  sources.push({ ok: true,  txt: `Архив: ${trunc(favTeam,13)} побеждает чаще` });
+    else if (m.histAgree === false) sources.push({ ok: false, txt: 'Архив противоречит прогнозу' });
+    if (m.steamData?.agrees === true)  sources.push({ ok: true,  txt: 'Умные деньги идут на фаворита' });
+    else if (m.steamData?.agrees === false) sources.push({ ok: false, txt: 'Умные деньги против фаворита' });
+    if (m.domData && Math.abs(m.domData?.score || 0) >= 0.3) {
+      const df = (m.domData.score > 0) === favHome ? favTeam : (favHome ? m.awayTeam : m.homeTeam);
+      sources.push({ ok: (m.domData.score > 0) === favHome, txt: `Доминирование: ${trunc(df,13)} выигрывает очки убедительно` });
+    }
+    if (m.nnProb !== null && m.nnProb !== undefined && Math.abs(m.nnProb - 50) >= 7) {
+      const nnFav = m.nnProb > 50 ? m.homeTeam : m.awayTeam;
+      sources.push({ ok: m.nnAgrees === true, txt: `Нейросеть: ${trunc(nnFav,13)} ${Math.max(m.nnProb, 100 - m.nnProb).toFixed(0)}%` });
+    }
+    if (h?.elo && (h.elo.p1 !== 1500 || h.elo.p2 !== 1500)) {
+      const eloFav = h.elo.p1 > h.elo.p2 ? m.homeTeam : m.awayTeam;
+      sources.push({ ok: (h.elo.p1 > h.elo.p2) === favHome, txt: `Elo: ${trunc(eloFav,13)} рейтинг выше (${Math.max(h.elo.p1,h.elo.p2)})` });
+    }
+    if (h?.h2h && h.h2h.total >= 2) {
+      const h2hHome = h.h2h.p1Wins > h.h2h.p2Wins;
+      sources.push({ ok: h2hHome === favHome, txt: `H2H: ${h.h2h.p1Wins}–${h.h2h.p2Wins} за ${trunc(h2hHome ? m.homeTeam : m.awayTeam, 12)}` });
+    }
+    const okCount  = sources.filter(s => s.ok).length;
+    const confLabel = okCount >= 4 ? '🔒 Высокая уверенность' : okCount >= 2 ? '📊 Средняя' : '⚠️ Мало данных';
+    const confCls   = okCount >= 4 ? 'cp-conf-high' : okCount >= 2 ? 'cp-conf-med' : 'cp-conf-low';
+    const sourcesHtml = sources.length
+      ? sources.map(s => `<div class="cp-src ${s.ok?'cp-src-ok':'cp-src-warn'}">${s.ok?'✅':'⚠️'} ${esc(s.txt)}</div>`).join('')
+      : `<div class="cp-src">— Статистика загружается...</div>`;
+    const risks = [];
+    if ((m._instab||0) > 0.35)            risks.push('нестабильная игра');
+    if (m.histAgree === false)             risks.push('архив против');
+    if (m.steamData?.agrees === false)     risks.push('умные деньги против');
+    if (_dupeMap.has(m.homeTeam)||_dupeMap.has(m.awayTeam)) risks.push('дубль матчей');
+
+    // Odds block
+    const mov = m.steamData?.drift || null;
+    const hasSteam = mov && (mov.w1Steam || mov.w2Steam);
+    let oddsHtml = '';
+    if (m.w1Odds || m.w2Odds) {
+      const mkChip = (name, val, pct, fav, drift, initVal, steam) => {
+        const driftHtml = drift != null && Math.abs(drift) >= 1.5
+          ? `<span class="o-drift ${drift>0?'drift-dn':'drift-up'}">${drift>0?'↓':'↑'}${Math.abs(drift)}%</span>` : '';
+        const initHtml = initVal && Math.abs(initVal - val) >= 0.02
+          ? `<span class="o-init">было ${initVal.toFixed(2)}</span>` : '';
+        return `<div class="odds-chip ${fav?'odds-fav':''} ${steam?'odds-steam':''}">
+          <span class="o-name">${esc(name)}</span>
+          <span class="o-val">${val.toFixed(2)}${driftHtml}</span>
+          <span class="o-pct">${pct}%${initHtml}</span>
+          ${steam ? '<span class="o-steam-lbl">⚡стим</span>' : ''}
+        </div>`;
+      };
+      const chips = [];
+      if (m.w1Odds) chips.push(mkChip(trunc(m.homeTeam,11), m.w1Odds, m.matchWinHomeProb, m.matchWinHomeProb>50, mov?.w1Drift, mov?.w1Initial, mov?.w1Steam));
+      if (m.wxOdds && m.drawProb>0) chips.push(mkChip('X', m.wxOdds, m.drawProb, false, null, null, false));
+      if (m.w2Odds) chips.push(mkChip(trunc(m.awayTeam,11), m.w2Odds, m.matchWinAwayProb, m.matchWinAwayProb>50, mov?.w2Drift, mov?.w2Initial, mov?.w2Steam));
+      const sparkSvg  = isTT ? _sparklineHtml(m.id) : '';
+      const sparkHtml = sparkSvg ? `<div class="spark-row">${sparkSvg}<span class="spark-lbl">${esc(trunc(m.homeTeam,10))} ← кф</span></div>` : '';
+      oddsHtml = `<div class="fa-section">
+        <div class="fa-sec-title">📈 Котировки</div>
+        <div class="odds-strip">${chips.join('')}${m.leonMargin?`<span class="odds-margin">Маржа ${m.leonMargin}%</span>`:''}</div>
+        ${hasSteam ? `<div class="steam-banner">⚡ УМНЫЕ ДЕНЬГИ — резкое движение котировок</div>` : ''}
+        ${sparkHtml}
+      </div>`;
+    }
+
+    // Momentum
+    const smiDir = m.momentumAdj > 2 ? '▲' : m.momentumAdj < -2 ? '▼' : '–';
+    const smiCls = m.momentumAdj > 2 ? 'smi-up' : m.momentumAdj < -2 ? 'smi-down' : 'smi-neu';
+    const momentumHtml = `<div class="fa-section">
+      <div class="momentum-wrap">
+        <div class="momentum-label">
+          <span class="ml-left">${esc(trunc(m.homeTeam,13))}</span>
+          <span class="ml-mid">Моментум <span class="${smiCls}">${smiDir}</span></span>
+          <span class="ml-right">${esc(trunc(m.awayTeam,13))}</span>
+        </div>
+        <div class="momentum-bar"><div class="mfill home" style="width:${m.momentum}%"></div></div>
+      </div>
+    </div>`;
+
+    // Set win prob
+    const swPct = m.setWinHomeProb || 50;
+    const setWinHtml = isTT && m.isLive && m.currentPts > 0 && Math.abs(swPct - 50) >= 10 ? (() => {
+      const fw = swPct > 50; const pct = fw ? swPct : 100 - swPct;
+      const cls = pct >= 75 ? 'sw-strong' : pct >= 65 ? 'sw-med' : 'sw-weak';
+      return `<div class="set-win-row"><span class="sw-label">Пар.${m.currentSetNum}:</span><span class="${cls}">${esc(trunc(fw?m.homeTeam:m.awayTeam,14))} ${pct}%</span></div>`;
+    })() : '';
+
+    // Domination
+    const dom = m.domData;
+    const domHtml = dom && (dom.homeAvg > 0 || dom.awayAvg > 0) && m.doneSets?.length >= 1 ? `
+      <div class="dom-row"><span class="dom-label">Доминирование:</span>
+        <span class="dom-val ${dom.homeAvg > dom.awayAvg+1?'dom-home':dom.awayAvg>dom.homeAvg+1?'dom-away':''}">
+          ${esc(trunc(m.homeTeam,10))} ${dom.homeAvg>0?dom.homeAvg+'оч/пар':'—'}<span class="dom-sep">vs</span>${esc(trunc(m.awayTeam,10))} ${dom.awayAvg>0?dom.awayAvg+'оч/пар':'—'}
+        </span>
+      </div>` : '';
+
+    // Velocity
+    const vel = m._scoreVel;
+    const velHtml = vel && (vel.home > 0 || vel.away > 0) ? `
+      <div class="vel-row"><span class="vel-label">Темп:</span>
+        <span class="vel-home">${esc(trunc(m.homeTeam,9))} ${vel.home}оч/мин</span><span class="vel-sep">↔</span>
+        <span class="vel-away">${esc(trunc(m.awayTeam,9))} ${vel.away}оч/мин</span>
+        ${vel.run !== 0 ? `<span class="vel-run ${vel.run>0?'run-home':'run-away'}">🔥 серия ${esc(trunc(vel.run>0?m.homeTeam:m.awayTeam,8))}</span>` : ''}
+      </div>` : '';
+
+    // Score distrib
+    const distribHtml = (() => {
+      if (!m.scoreDistrib || !m.isLive) return '';
+      const sorted = Object.entries(m.scoreDistrib).sort((a,b) => b[1]-a[1]);
+      const topP   = sorted[0]?.[1] || 1;
+      return `<div class="score-distrib"><div class="sd-header">Прогноз счёта:</div>
+        ${sorted.slice(0,4).map(([k,v],i) => {
+          const isHome = parseInt(k[0]) > parseInt(k[2]);
+          return `<div class="sd-row ${i===0?'sd-bar-top':''}">
+            <span class="sd-score ${isHome?'sd-home':'sd-away'}">${k}</span>
+            <div class="sd-bar-track"><div class="sd-bar-fill ${isHome?'sd-home':'sd-away'}" style="width:${Math.round(v/topP*100)}%"></div></div>
+            <span class="sd-pct">${(v*100).toFixed(0)}%</span>
+          </div>`;
+        }).join('')}
+      </div>`;
+    })();
+
+    // Predictions
+    const predsHtml = m.predictions.length > 0
+      ? m.predictions.slice(0,3).map(predRow).join('')
+      : `<div class="pred-row type-nobet"><span class="pred-icon">⏳</span><span class="pred-body"><div class="pred-label">Ждём данных для прогноза</div></span></div>`;
+    const topPred = m.predictions.find(p => p.kelly.stake > 0);
+    const kellyHtml = topPred ? `<div class="kelly-box">
+      <div class="k-left"><span class="k-label">Kelly 25% · ${esc(topPred.market)}</span><span class="k-market">${esc(topPred.label)}</span></div>
+      <div class="k-right"><span class="k-stake">${topPred.kelly.stake}₽</span><span class="k-odds">@ ${topPred.odds.toFixed(2)}</span></div>
+    </div>` : '';
+
+    const aiHtml = isTT && m.isLive ? `
+      <button class="btn-ai" id="aibtn-${m.id}" onclick="App.loadAI('${m.id}', this)">🤖 AI анализ</button>
+      <div class="ai-result" id="ai-${m.id}" style="display:none"></div>` : '';
+    const leonBtn   = m.leonUrl ? `<a class="btn-leon" href="${esc(m.leonUrl)}" target="_blank" rel="noopener">Открыть на Леоне →</a>` : '';
+    const detailBtn = `<button class="btn-detail" onclick="App.openDetailView('${m.id}')">📋 Детали</button>`;
+
+    return `<div class="full-analysis">
+      <div class="fa-section fa-verdict">
+        <div class="cp-conf ${confCls}">${confLabel} · ${okCount} из ${sources.length} источников</div>
+        <div class="cp-favor">🏆 Фаворит: <strong>${esc(trunc(favTeam,18))}</strong> — ${favProb}%</div>
+        <div class="cp-sources">${sourcesHtml}</div>
+        ${risks.length ? `<div class="cp-risks">⚠️ Риски: ${risks.map(r=>`<span class="cp-risk">${esc(r)}</span>`).join(' ')}</div>` : `<div class="cp-risks cp-safe">✅ Явных рисков нет</div>`}
+      </div>
+      ${oddsHtml}
+      ${momentumHtml}
+      ${setWinHtml ? `<div class="fa-section">${setWinHtml}</div>` : ''}
+      ${(domHtml||velHtml) ? `<div class="fa-section">${domHtml}${velHtml}</div>` : ''}
+      ${distribHtml ? `<div class="fa-section">${distribHtml}</div>` : ''}
+      ${historyRowHtml(m) ? `<div class="fa-section">${historyRowHtml(m)}</div>` : ''}
+      <div class="fa-section">
+        <div class="fa-sec-title">📊 Прогнозы</div>
+        ${predsHtml}
+      </div>
+      ${kellyHtml ? `<div class="fa-section">${kellyHtml}</div>` : ''}
+      ${aiHtml ? `<div class="fa-section">${aiHtml}</div>` : ''}
+      <div class="fa-section card-bottom-row">${leonBtn}${detailBtn}</div>
+    </div>`;
+  }
+
+  // ── Card — minimal: names + score + button only ───────
   function renderCard(m) {
     const sport = m.sport || 'tt';
     const isGoalSport = sport === 'football' || sport === 'hockey';
@@ -1528,180 +1701,40 @@ const App = (() => {
       m.id === highlightedId ? 'card-highlighted' : '',
     ].filter(Boolean).join(' ');
 
-    // Score display
-    const hs = m.homeSets ?? m.homeScore ?? 0;
+    const hs  = m.homeSets ?? m.homeScore ?? 0;
     const as_ = m.awaySets ?? m.awayScore ?? 0;
+    const homeWin = hs > as_, awayWin = as_ > hs;
 
-    // Set chips (TT + Tennis)
     let setsHtml = '';
     if (!isGoalSport) {
       setsHtml = (m.sets || []).map(s => {
-        const done = isTT ? Engine.isSetDone(s.home, s.away)
-                          : SportsEngine.isSetDoneTennis(s.home, s.away);
+        const done = isTT ? Engine.isSetDone(s.home, s.away) : SportsEngine.isSetDoneTennis(s.home, s.away);
         return `<span class="set-chip ${done ? 'set-done' : 'set-active'}">${s.home}:${s.away}</span>`;
       }).join('');
     }
-
-    // Period/time label (football/hockey)
     const periodHtml = isGoalSport && m.periodLabel
-      ? `<div class="period-label">${esc(m.periodLabel)}${m.minute ? ` ${m.minute}'` : ''}</div>`
-      : '';
-
-    // Current score in set/game
+      ? `<div class="period-label">${esc(m.periodLabel)}${m.minute ? ` ${m.minute}'` : ''}</div>` : '';
     const curPtsHtml = !isGoalSport && m.currentPts > 0
-      ? `<div class="current-pts">${m.currentHomePts}:${m.currentAwayPts} в ${m.currentSetNum}-й ${isTT ? 'партии' : 'сете'}</div>`
-      : '';
+      ? `<div class="current-pts">${m.currentHomePts}:${m.currentAwayPts} в ${m.currentSetNum}-й ${isTT?'партии':'сете'}</div>` : '';
 
-    // Set win probability display
-    const swPct = m.setWinHomeProb || 50;
-    const setWinHtml = isTT && m.isLive && m.currentPts > 0 && Math.abs(swPct - 50) >= 10 ? (() => {
-      const favHome = swPct > 50;
-      const pct     = favHome ? swPct : 100 - swPct;
-      const favTeam = esc(trunc(favHome ? m.homeTeam : m.awayTeam, 14));
-      const cls     = pct >= 75 ? 'sw-strong' : pct >= 65 ? 'sw-med' : 'sw-weak';
-      return `<div class="set-win-row"><span class="sw-label">Пар.${m.currentSetNum}:</span><span class="${cls}">${favTeam} ${pct}%</span></div>`;
-    })() : '';
-
-    // Sparkline (odds movement history)
-    const sparkSvg  = isTT ? _sparklineHtml(m.id) : '';
-    const sparkHtml = sparkSvg ? `<div class="spark-row">${sparkSvg}<span class="spark-lbl">${esc(trunc(m.homeTeam,10))} ← кф</span></div>` : '';
-
-    // Odds block с движением котировок
-    const mov = m.steamData?.drift || null;
-    const hasSteam = mov && (mov.w1Steam || mov.w2Steam);
-    let oddsHtml = '';
-    if (m.w1Odds || m.w2Odds) {
-      const mkChip = (name, val, pct, fav, drift, initVal, steam) => {
-        const driftHtml = drift != null && Math.abs(drift) >= 1.5
-          ? `<span class="o-drift ${drift > 0 ? 'drift-dn' : 'drift-up'}">${drift > 0 ? '↓' : '↑'}${Math.abs(drift)}%</span>`
-          : '';
-        const initHtml = initVal && Math.abs(initVal - val) >= 0.02
-          ? `<span class="o-init">было ${initVal.toFixed(2)}</span>` : '';
-        return `<div class="odds-chip ${fav?'odds-fav':''} ${steam?'odds-steam':''}">
-          <span class="o-name">${esc(name)}</span>
-          <span class="o-val">${val.toFixed(2)}${driftHtml}</span>
-          <span class="o-pct">${pct}%${initHtml}</span>
-          ${steam ? '<span class="o-steam-lbl">⚡стим</span>' : ''}
-        </div>`;
-      };
-      const chips = [];
-      if (m.w1Odds) chips.push(mkChip(trunc(m.homeTeam,11), m.w1Odds, m.matchWinHomeProb,
-        m.matchWinHomeProb>50, mov?.w1Drift, mov?.w1Initial, mov?.w1Steam));
-      if (m.wxOdds && m.drawProb>0) chips.push(mkChip('X', m.wxOdds, m.drawProb, false, null, null, false));
-      if (m.w2Odds) chips.push(mkChip(trunc(m.awayTeam,11), m.w2Odds, m.matchWinAwayProb,
-        m.matchWinAwayProb>50, mov?.w2Drift, mov?.w2Initial, mov?.w2Steam));
-      oddsHtml = `<div class="odds-strip">
-        ${chips.join('')}
-        ${m.leonMargin ? `<span class="odds-margin">Маржа ${m.leonMargin}%</span>` : ''}
-      </div>
-      ${hasSteam ? `<div class="steam-banner">⚡ УМНЫЕ ДЕНЬГИ — резкое движение котировок</div>` : ''}`;
-    }
-
-    // Доминирование по очкам
-    const dom = m.domData;
-    const domHtml = dom && (dom.homeAvg > 0 || dom.awayAvg > 0) && m.doneSets?.length >= 1 ? `
-      <div class="dom-row">
-        <span class="dom-label">Доминирование:</span>
-        <span class="dom-val ${dom.homeAvg > dom.awayAvg + 1 ? 'dom-home' : dom.awayAvg > dom.homeAvg + 1 ? 'dom-away' : ''}">
-          ${esc(trunc(m.homeTeam,10))} ${dom.homeAvg > 0 ? dom.homeAvg+'оч/пар' : '—'}
-          <span class="dom-sep">vs</span>
-          ${esc(trunc(m.awayTeam,10))} ${dom.awayAvg > 0 ? dom.awayAvg+'оч/пар' : '—'}
-        </span>
-      </div>` : '';
-
-    // Распределение счёта матча (с визуальными барами)
-    const distribHtml = (() => {
-      if (!m.scoreDistrib || !m.isLive) return '';
-      const sorted = Object.entries(m.scoreDistrib).sort((a, b) => b[1] - a[1]);
-      const topProb = sorted[0]?.[1] || 1;
-      const items = sorted.slice(0, 4).map(([k, v], i) => {
-        const pct = (v * 100).toFixed(0);
-        const barW = Math.round(v / topProb * 100);
-        const isHome = parseInt(k[0]) > parseInt(k[2]);
-        const cls = i === 0 ? 'sd-bar-top' : '';
-        const teamCls = isHome ? 'sd-home' : 'sd-away';
-        return `<div class="sd-row ${cls}">
-          <span class="sd-score ${teamCls}">${k}</span>
-          <div class="sd-bar-track"><div class="sd-bar-fill ${teamCls}" style="width:${barW}%"></div></div>
-          <span class="sd-pct">${pct}%</span>
-        </div>`;
-      }).join('');
-      return `<div class="score-distrib">
-        <div class="sd-header">Прогноз счёта:</div>
-        ${items}
-      </div>`;
-    })();
-
-    // Скорость очков
-    const vel = m._scoreVel;
-    const velHtml = vel && (vel.home > 0 || vel.away > 0) ? `
-      <div class="vel-row">
-        <span class="vel-label">Темп:</span>
-        <span class="vel-home">${esc(trunc(m.homeTeam, 9))} ${vel.home}оч/мин</span>
-        <span class="vel-sep">↔</span>
-        <span class="vel-away">${esc(trunc(m.awayTeam, 9))} ${vel.away}оч/мин</span>
-        ${vel.run !== 0 ? `<span class="vel-run ${vel.run > 0 ? 'run-home' : 'run-away'}">${vel.run > 0 ? '🔥 серия ' + esc(trunc(m.homeTeam, 8)) : '🔥 серия ' + esc(trunc(m.awayTeam, 8))}</span>` : ''}
-      </div>` : '';
-
-    const smiDir = m.momentumAdj > 2 ? '▲' : m.momentumAdj < -2 ? '▼' : '–';
-    const smiCls = m.momentumAdj > 2 ? 'smi-up' : m.momentumAdj < -2 ? 'smi-down' : 'smi-neu';
-
-    const predsHtml = m.predictions.length > 0
-      ? m.predictions.slice(0, 3).map(predRow).join('')
-      : `<div class="pred-row type-nobet">
-           <span class="pred-icon">⏳</span>
-           <span class="pred-body"><div class="pred-label">Ждём данных для прогноза</div></span>
-         </div>`;
-
-    const topPred = m.predictions.find(p => p.kelly.stake > 0);
-    const kellyHtml = topPred ? `
-      <div class="kelly-box">
-        <div class="k-left">
-          <span class="k-label">Kelly 25% · ${esc(topPred.market)}</span>
-          <span class="k-market">${esc(topPred.label)}</span>
-        </div>
-        <div class="k-right">
-          <span class="k-stake">${topPred.kelly.stake}₽</span>
-          <span class="k-odds">@ ${topPred.odds.toFixed(2)}</span>
-        </div>
-      </div>` : '';
-
-    const leonBtn = m.leonUrl ? `
-      <a class="btn-leon" href="${esc(m.leonUrl)}" target="_blank" rel="noopener">
-        Открыть на Леоне →
-      </a>` : '';
-
-    const detailBtn = `<button class="btn-detail" onclick="App.openDetailView('${m.id}')">📋 Детали</button>`;
-
-    const aiHtml = isTT && m.isLive ? `
-      <button class="btn-ai" id="aibtn-${m.id}" onclick="App.loadAI('${m.id}', this)">🤖 AI анализ</button>
-      <div class="ai-result" id="ai-${m.id}" style="display:none"></div>` : '';
-
-    const predBtnHtml = m.isLive ? `
-      <button class="btn-get-pred" onclick="App.getCardPrediction('${m.id}')">📊 Получить прогноз</button>
-      <div id="cpred-${m.id}" style="display:none"></div>` : '';
+    const stripCls = m.bestSignal === 'high' ? 'strip-green' : m.bestSignal === 'medium' ? 'strip-yellow' : m.bestSignal === 'low' ? 'strip-blue' : 'strip-grey';
+    const cardCls  = [m.bestSignal === 'high' ? 'sig-strong' : m.bestSignal === 'medium' ? 'sig-medium' : '', m.id === highlightedId ? 'card-highlighted' : ''].filter(Boolean).join(' ');
+    const sportIcon = SPORT_META[sport]?.icon || '';
 
     const statusBadge = m.isLive
       ? `<span class="card-status status-live"><span class="live-dot-small"></span>LIVE</span>`
       : `<span class="card-status status-pre">СКОРО</span>`;
-
-    const dupeHome = _dupeMap.has(m.homeTeam);
-    const dupeAway = _dupeMap.has(m.awayTeam);
-    const dupeWarnHtml = (dupeHome || dupeAway) && m.isLive
-      ? `<div class="dupe-warn">⚠️ ${esc(trunc((dupeHome ? m.homeTeam : m.awayTeam), 14))} играет в нескольких матчах — данные могут быть дублированы</div>`
-      : '';
-
-    const sportIcon = SPORT_META[sport]?.icon || '';
+    const sigBadge = m.bestSignal === 'high'   ? `<span class="card-sig-badge sig-h">🎯</span>`
+                   : m.bestSignal === 'medium'  ? `<span class="card-sig-badge sig-m">📊</span>` : '';
 
     return `
     <div class="match-card ${cardCls}" data-id="${m.id}">
       <div class="card-strip ${stripCls}"></div>
-      <div class="card-inner">
+      <div class="card-inner card-minimal">
         <div class="card-meta">
           <span class="card-tournament">${sportIcon} ${esc(m.tournament)}</span>
-          ${statusBadge}
+          <div style="display:flex;gap:4px;align-items:center">${sigBadge}${statusBadge}</div>
         </div>
-        ${dupeWarnHtml}
         <div class="scoreboard">
           <div class="sb-player home">
             <span class="sb-name ${homeWin ? 'winning' : ''}">${esc(m.homeTeam)}</span>
@@ -1720,31 +1753,8 @@ const App = (() => {
             <span class="sb-name ${awayWin ? 'winning' : ''}">${esc(m.awayTeam)}</span>
           </div>
         </div>
-        <div class="momentum-wrap">
-          <div class="momentum-label">
-            <span class="ml-left">${esc(trunc(m.homeTeam, 13))}</span>
-            <span class="ml-mid">Моментум <span class="${smiCls}">${smiDir}</span></span>
-            <span class="ml-right">${esc(trunc(m.awayTeam, 13))}</span>
-          </div>
-          <div class="momentum-bar">
-            <div class="mfill home" style="width:${m.momentum}%"></div>
-          </div>
-        </div>
-        ${setWinHtml}
-        ${historyRowHtml(m)}
-        ${domHtml}
-        ${velHtml}
-        ${distribHtml}
-        ${oddsHtml}
-        ${sparkHtml}
-        <div class="preds-section">
-          <div class="preds-title">📊 Прогнозы</div>
-          ${predsHtml}
-        </div>
-        ${kellyHtml}
-        ${predBtnHtml}
-        ${aiHtml}
-        <div class="card-bottom-row">${leonBtn}${detailBtn}</div>
+        <button class="btn-get-pred" onclick="App.getCardPrediction('${m.id}')">📊 Получить прогноз</button>
+        <div id="cpred-${m.id}" style="display:none"></div>
       </div>
     </div>`;
   }

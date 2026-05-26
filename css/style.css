@@ -1467,3 +1467,45 @@ header {
   border: none; background: transparent; margin: 0;
   animation: none;
 }
+
+/* ====================================================== */
+/* MINIMAL CARD                                           */
+/* ====================================================== */
+
+.card-minimal { padding: 10px 12px 10px; }
+.card-minimal .scoreboard { margin: 6px 0 8px; }
+.card-minimal .card-meta  { margin-bottom: 4px; }
+
+.card-sig-badge { font-size: 1rem; line-height:1; }
+.sig-h { filter: drop-shadow(0 0 4px rgba(34,197,94,.5)); }
+.sig-m { filter: drop-shadow(0 0 4px rgba(245,158,11,.4)); }
+
+/* ====================================================== */
+/* FULL ANALYSIS PANEL (inside cpred)                     */
+/* ====================================================== */
+
+.full-analysis { font-size: 0.82rem; }
+
+.fa-section {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+}
+.fa-section:first-child { border-top: none; }
+
+.fa-sec-title {
+  font-size: 0.72rem; font-weight: 700; letter-spacing: .04em;
+  color: var(--text3); text-transform: uppercase; margin-bottom: 6px;
+}
+
+.fa-verdict { padding: 0; }
+.fa-verdict .cp-conf    { border-bottom: none; border-radius: 0; }
+.fa-verdict .cp-sources { padding: 4px 12px 6px; }
+.fa-verdict .cp-favor   { padding: 5px 12px; border-top: 1px solid var(--border); }
+.fa-verdict .cp-risks   { border-top: 1px solid var(--border); }
+
+.full-analysis .card-bottom-row {
+  display: flex; gap: 8px; padding: 8px 12px;
+  border-top: 1px solid var(--border);
+}
+.full-analysis .btn-leon,
+.full-analysis .btn-detail { flex: 1; text-align: center; }
