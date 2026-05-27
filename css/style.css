@@ -1382,6 +1382,7 @@ header {
 }
 .cp-conf-high { background: rgba(34,197,94,0.12);  color: #22c55e; }
 .cp-conf-med  { background: rgba(245,158,11,0.10); color: #f59e0b; }
+.cp-conf-part { background: rgba(99,102,241,0.10); color: #818cf8; }
 .cp-conf-low  { background: rgba(239,68,68,0.08);  color: #ef4444; }
 
 .cp-favor {

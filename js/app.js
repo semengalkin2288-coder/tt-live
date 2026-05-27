@@ -590,37 +590,50 @@ const App = (() => {
     const h        = _historyCache[m.id];
 
     const sources = [];
+    // Живые данные матча (всегда доступны)
+    if (m.isLive && m.currentPts > 0) {
+      const lead = m.currentHomePts - m.currentAwayPts;
+      const maxP = Math.max(m.currentHomePts, m.currentAwayPts);
+      if (Math.abs(lead) >= 5 || (maxP >= 8 && Math.abs(lead) >= 3)) {
+        const leader = lead > 0 ? m.homeTeam : m.awayTeam;
+        sources.push({ ok: (lead > 0) === favHome, txt: `Партия ${m.currentSetNum}: ${trunc(leader,12)} ведёт ${m.currentHomePts}:${m.currentAwayPts}` });
+      }
+    }
+    if (m.isLive) {
+      const sLead = (m.homeSets||0) - (m.awaySets||0);
+      if (Math.abs(sLead) >= 1)
+        sources.push({ ok: (sLead>0) === favHome, txt: `Счёт сетов: ${m.homeSets}:${m.awaySets}` });
+    }
+    if (Math.abs(m.momentumAdj||0) >= 8) {
+      const momFav = (m.momentumAdj||0) > 0 ? m.homeTeam : m.awayTeam;
+      sources.push({ ok: ((m.momentumAdj||0)>0) === favHome, txt: `Моментум: ${trunc(momFav,12)} набирает ход` });
+    }
     if (m.histAgree === true)  sources.push({ ok: true,  txt: `Архив: ${trunc(favTeam,13)} побеждает в схожих матчах` });
     else if (m.histAgree === false) sources.push({ ok: false, txt: 'Архив противоречит прогнозу' });
-
     if (m.steamData?.agrees === true)  sources.push({ ok: true,  txt: 'Умные деньги идут на фаворита' });
     else if (m.steamData?.agrees === false) sources.push({ ok: false, txt: 'Умные деньги против фаворита' });
-
-    if (m.domData && Math.abs(m.domData?.score || 0) >= 0.3) {
+    if (m.domData && Math.abs(m.domData?.score || 0) >= 0.25) {
       const df = (m.domData.score > 0) === favHome ? favTeam : (favHome ? m.awayTeam : m.homeTeam);
-      sources.push({ ok: (m.domData.score > 0) === favHome, txt: `Доминирование: ${trunc(df,13)} выигрывает очки убедительно` });
+      sources.push({ ok: (m.domData.score > 0) === favHome, txt: `Доминирование: ${trunc(df,13)} выигрывает убедительно` });
     }
-
     if (m.nnProb !== null && m.nnProb !== undefined && Math.abs(m.nnProb - 50) >= 7) {
       const nnFav = m.nnProb > 50 ? m.homeTeam : m.awayTeam;
       sources.push({ ok: m.nnAgrees === true, txt: `Нейросеть: ${trunc(nnFav,13)} ${Math.max(m.nnProb, 100 - m.nnProb).toFixed(0)}%` });
     }
-
     if (h?.elo && (h.elo.p1 !== 1500 || h.elo.p2 !== 1500)) {
       const eloFav = h.elo.p1 > h.elo.p2 ? m.homeTeam : m.awayTeam;
       sources.push({ ok: (h.elo.p1 > h.elo.p2) === favHome, txt: `Elo: ${trunc(eloFav,13)} рейтинг выше (${Math.max(h.elo.p1,h.elo.p2)})` });
     }
-
     if (h?.h2h && h.h2h.total >= 2) {
       const h2hHome = h.h2h.p1Wins > h.h2h.p2Wins;
       sources.push({ ok: h2hHome === favHome, txt: `H2H: ${h.h2h.p1Wins}–${h.h2h.p2Wins} в пользу ${trunc(h2hHome ? m.homeTeam : m.awayTeam, 12)}` });
     }
-
     const okCount  = sources.filter(s => s.ok).length;
-    const confLabel = okCount >= 4 ? '🔒 Высокая уверенность'
-                    : okCount >= 2 ? '📊 Средняя уверенность'
-                    : '⚠️ Мало данных';
-    const confCls   = okCount >= 4 ? 'cp-conf-high' : okCount >= 2 ? 'cp-conf-med' : 'cp-conf-low';
+    const confLabel = okCount >= 4 ? '🔒 Много данных'
+                    : okCount >= 2 ? '📊 Достаточно данных'
+                    : okCount >= 1 ? '📋 Частичные данные'
+                    : '⚠️ Нет подтверждений';
+    const confCls   = okCount >= 4 ? 'cp-conf-high' : okCount >= 2 ? 'cp-conf-med' : okCount >= 1 ? 'cp-conf-part' : 'cp-conf-low';
 
     const sourcesHtml = sources.length
       ? sources.map(s =>
@@ -1524,13 +1537,41 @@ const App = (() => {
     const h        = _historyCache[m.id];
 
     const sources = [];
+
+    // ── Источник 1: текущий счёт в партии (всегда доступен для лайва) ──
+    if (m.isLive && m.currentPts > 0) {
+      const lead = m.currentHomePts - m.currentAwayPts;
+      const maxP = Math.max(m.currentHomePts, m.currentAwayPts);
+      if (Math.abs(lead) >= 5 || (maxP >= 8 && Math.abs(lead) >= 3)) {
+        const leader = lead > 0 ? m.homeTeam : m.awayTeam;
+        const ok = (lead > 0) === favHome;
+        sources.push({ ok, txt: `Партия ${m.currentSetNum}: ${trunc(leader,12)} ведёт ${m.currentHomePts}:${m.currentAwayPts}` });
+      }
+    }
+
+    // ── Источник 2: счёт по сетам (явный лидер) ──
+    if (m.isLive) {
+      const sLead = (m.homeSets || 0) - (m.awaySets || 0);
+      if (Math.abs(sLead) >= 1) {
+        const sLeader = sLead > 0 ? m.homeTeam : m.awayTeam;
+        sources.push({ ok: (sLead > 0) === favHome, txt: `Счёт сетов: ${trunc(sLeader,12)} ведёт ${m.homeSets}:${m.awaySets}` });
+      }
+    }
+
+    // ── Источник 3: моментум ──
+    if (Math.abs(m.momentumAdj || 0) >= 8) {
+      const momFav = (m.momentumAdj || 0) > 0 ? m.homeTeam : m.awayTeam;
+      sources.push({ ok: ((m.momentumAdj||0) > 0) === favHome, txt: `Моментум: ${trunc(momFav,12)} набирает ход` });
+    }
+
+    // ── Источник 4: архив, умные деньги, доминирование ──
     if (m.histAgree === true)  sources.push({ ok: true,  txt: `Архив: ${trunc(favTeam,13)} побеждает чаще` });
     else if (m.histAgree === false) sources.push({ ok: false, txt: 'Архив противоречит прогнозу' });
     if (m.steamData?.agrees === true)  sources.push({ ok: true,  txt: 'Умные деньги идут на фаворита' });
     else if (m.steamData?.agrees === false) sources.push({ ok: false, txt: 'Умные деньги против фаворита' });
-    if (m.domData && Math.abs(m.domData?.score || 0) >= 0.3) {
+    if (m.domData && Math.abs(m.domData?.score || 0) >= 0.25) {
       const df = (m.domData.score > 0) === favHome ? favTeam : (favHome ? m.awayTeam : m.homeTeam);
-      sources.push({ ok: (m.domData.score > 0) === favHome, txt: `Доминирование: ${trunc(df,13)} выигрывает очки убедительно` });
+      sources.push({ ok: (m.domData.score > 0) === favHome, txt: `Доминирование: ${trunc(df,13)} выигрывает убедительно` });
     }
     if (m.nnProb !== null && m.nnProb !== undefined && Math.abs(m.nnProb - 50) >= 7) {
       const nnFav = m.nnProb > 50 ? m.homeTeam : m.awayTeam;
@@ -1542,11 +1583,16 @@ const App = (() => {
     }
     if (h?.h2h && h.h2h.total >= 2) {
       const h2hHome = h.h2h.p1Wins > h.h2h.p2Wins;
-      sources.push({ ok: h2hHome === favHome, txt: `H2H: ${h.h2h.p1Wins}–${h.h2h.p2Wins} за ${trunc(h2hHome ? m.homeTeam : m.awayTeam, 12)}` });
+      const h2hSrc  = h.h2h.source ? ` [${h.h2h.source}]` : '';
+      sources.push({ ok: h2hHome === favHome, txt: `H2H${h2hSrc}: ${h.h2h.p1Wins}–${h.h2h.p2Wins} за ${trunc(h2hHome ? m.homeTeam : m.awayTeam, 11)}` });
     }
+
     const okCount  = sources.filter(s => s.ok).length;
-    const confLabel = okCount >= 4 ? '🔒 Высокая уверенность' : okCount >= 2 ? '📊 Средняя' : '⚠️ Мало данных';
-    const confCls   = okCount >= 4 ? 'cp-conf-high' : okCount >= 2 ? 'cp-conf-med' : 'cp-conf-low';
+    const confLabel = okCount >= 4 ? '🔒 Много данных'
+                    : okCount >= 2 ? '📊 Достаточно данных'
+                    : okCount >= 1 ? '📋 Частичные данные'
+                    : '⚠️ Нет подтверждений';
+    const confCls   = okCount >= 4 ? 'cp-conf-high' : okCount >= 2 ? 'cp-conf-med' : okCount >= 1 ? 'cp-conf-part' : 'cp-conf-low';
     const sourcesHtml = sources.length
       ? sources.map(s => `<div class="cp-src ${s.ok?'cp-src-ok':'cp-src-warn'}">${s.ok?'✅':'⚠️'} ${esc(s.txt)}</div>`).join('')
       : `<div class="cp-src">— Статистика загружается...</div>`;
