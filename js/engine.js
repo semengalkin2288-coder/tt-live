@@ -67,10 +67,10 @@ const Engine = (() => {
       const p = 1 - Math.pow(0.5, d);
       return leader === 'home' ? p : 1 - p;
     }
-    // Прогресс в партии
+    // Прогресс в партии — не завышаем уверенность: даже при 8:2 камбэки реальны
     const progress = maxP / 10;
-    const scale = 0.04 + progress * 0.10;
-    return Math.max(0.04, Math.min(0.96, 0.5 + diff * scale));
+    const scale = 0.025 + progress * 0.055;
+    return Math.max(0.04, Math.min(0.87, 0.5 + diff * scale));
   }
 
   // ── Нестабильность ситуации (0 = стабильно, 1 = хаос) ────
@@ -296,12 +296,13 @@ const Engine = (() => {
     }
 
     // HIGH: сильный EV + высокая вероятность + подтверждение
-    if (evPct >= 9.0 && prob >= 0.68 && instab <= 0.20 && confirmations >= 1) return 'high';
-    if (evPct >= 11.0 && prob >= 0.67 && instab <= 0.22) return 'high';
+    // Верхняя граница EV: >40% при живых котировках = ошибка модели (реальный край 5-20%)
+    if (evPct >= 9.0 && evPct <= 40 && prob >= 0.68 && instab <= 0.20 && confirmations >= 1) return 'high';
+    if (evPct >= 11.0 && evPct <= 40 && prob >= 0.67 && instab <= 0.22) return 'high';
 
     // MEDIUM: хорошая математика + подтверждение
-    if (evPct >= 6.0 && prob >= 0.65 && instab <= 0.28 && confirmations >= 1) return 'medium';
-    if (evPct >= 7.5 && prob >= 0.66 && instab <= 0.24) return 'medium';
+    if (evPct >= 6.0 && evPct <= 35 && prob >= 0.65 && instab <= 0.28 && confirmations >= 1) return 'medium';
+    if (evPct >= 7.5 && evPct <= 35 && prob >= 0.66 && instab <= 0.24) return 'medium';
 
     return 'none';
   }
@@ -485,7 +486,28 @@ const Engine = (() => {
     // ── 6. Гандикап по сетам ─────────────────────────────
     let hdpHomeProb = null, hdpAwayProb = null;
     if (hdpLine !== null && hdpLine !== undefined && hdpHomeOdds && hdpAwayOdds) {
-      [hdpHomeProb, hdpAwayProb] = handicapDP(homeSets, awaySets, setWinFinal, hdpLine, stw);
+      // Проверка достижимости: может ли ставка ещё выиграть физически?
+      // Лучший случай для home: выигрывает все оставшиеся сеты → финал (stw, awaySets)
+      // Лучший случай для away: выигрывает все оставшиеся сеты → финал (homeSets, stw)
+      const bestHomeNet = stw - awaySets;      // макс. перевес home по сетам
+      const bestAwayNet = stw - homeSets;      // макс. перевес away по сетам
+      const canHomeWin = bestHomeNet + hdpLine > 0;   // home покрывает гандикап
+      const canAwayWin = bestAwayNet - hdpLine > 0;   // away покрывает
+
+      if (canHomeWin || canAwayWin) {
+        [hdpHomeProb, hdpAwayProb] = handicapDP(homeSets, awaySets, setWinFinal, hdpLine, stw);
+
+        // Ограничиваем отклонение от рыночной вероятности гандикапа (как match winner)
+        const mktHdpBase = noVigProb(hdpHomeOdds, hdpAwayOdds);
+        const MAX_HDP_DEV = 0.13;
+        hdpHomeProb = Math.max(mktHdpBase.home - MAX_HDP_DEV,
+                       Math.min(mktHdpBase.home + MAX_HDP_DEV, hdpHomeProb));
+        hdpAwayProb = Math.max(mktHdpBase.away - MAX_HDP_DEV,
+                       Math.min(mktHdpBase.away + MAX_HDP_DEV, hdpAwayProb));
+
+        if (!canHomeWin) hdpHomeProb = 0;
+        if (!canAwayWin) hdpAwayProb = 0;
+      }
     }
 
     // ── 7. Моментум для UI ────────────────────────────────
@@ -502,6 +524,8 @@ const Engine = (() => {
       if (setsPlayed === 0 && (currentHomePts + currentAwayPts) < 8) return;
       // Требуем значимое расхождение с рынком (минимум 10pp)
       if (mktProb !== null && mktProb !== undefined && Math.abs(prob - mktProb) < 0.10) return;
+      // Ограничение реалистичности: EV >50% = ошибка модели, а не реальное преимущество
+      if (evPct > 50) return;
       const sig = signalLevel(evPct, prob, instab, hist.agree, hist.strength, steam.agrees, domData.score, nnAgrees);
       if (sig === 'none') return;
       preds.push({

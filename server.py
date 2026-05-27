@@ -997,14 +997,19 @@ def _odds_tt(markets):
                     bal = abs(ov[0] - 2.0) + abs(un[0] - 2.0)
                     if bal < best_bal:
                         best_bal = bal; tot_line = line; tot_over = ov[0]; tot_under = un[0]
-        if 'фора по сетам' in mn and len(runners) == 2 and not hdp_h:
+        if 'фора по сетам' in mn and len(runners) == 2:
+            # Предпочитаем линию ±1.5 (самую ликвидную); отбрасываем экзотику >±3.5
+            cand_h = cand_a = cand_l = None
             for r in runners:
                 n, p = r.get('name', '').strip(), r.get('price')
                 if not p or p <= 1.0: continue
                 hm = _re.search(r'([+-][\d.]+)', n)
                 lv = float(hm.group(1)) if hm else None
-                if n.startswith('1'): hdp_h, hdp_l = p, lv
-                elif n.startswith('2'): hdp_a = p
+                if n.startswith('1'): cand_h, cand_l = p, lv
+                elif n.startswith('2'): cand_a = p
+            if cand_h and cand_l is not None and abs(cand_l) <= 3.5:
+                if hdp_l is None or abs(abs(cand_l) - 1.5) < abs(abs(hdp_l) - 1.5):
+                    hdp_h, hdp_a, hdp_l = cand_h, cand_a, cand_l
     return w1, w2, tot_over, tot_under, tot_line, hdp_h, hdp_a, hdp_l
 
 
@@ -1205,14 +1210,18 @@ def _odds_tennis(markets):
                     bal = abs(ov[0] - 2.0) + abs(un[0] - 2.0)
                     if bal < best_bal:
                         best_bal = bal; tot_line = line; tot_over = ov[0]; tot_under = un[0]
-        if 'фора по сетам' in mn and len(runners) == 2 and not hdp_h:
+        if 'фора по сетам' in mn and len(runners) == 2:
+            cand_h = cand_a = cand_l = None
             for r in runners:
                 n, p = r.get('name', '').strip(), r.get('price')
                 if not p or p <= 1.0: continue
                 hm = _re.search(r'([+-][\d.]+)', n)
                 lv = float(hm.group(1)) if hm else None
-                if n.startswith('1'): hdp_h, hdp_l = p, lv
-                elif n.startswith('2'): hdp_a = p
+                if n.startswith('1'): cand_h, cand_l = p, lv
+                elif n.startswith('2'): cand_a = p
+            if cand_h and cand_l is not None and abs(cand_l) <= 2.5:
+                if hdp_l is None or abs(abs(cand_l) - 1.5) < abs(abs(hdp_l) - 1.5):
+                    hdp_h, hdp_a, hdp_l = cand_h, cand_a, cand_l
     return w1, w2, tot_over, tot_under, tot_line, hdp_h, hdp_a, hdp_l
 
 
