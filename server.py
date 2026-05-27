@@ -8,6 +8,12 @@ try:
     _HAS_NP = True
 except ImportError:
     _HAS_NP = False
+
+try:
+    from bs4 import BeautifulSoup
+    _HAS_BS4 = True
+except ImportError:
+    _HAS_BS4 = False
 import urllib.request, urllib.parse, urllib.error
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -30,9 +36,9 @@ _NN_MODEL       = None # trained TinyNN instance
 _NN_LOCK        = threading.Lock()
 _MATCH_SEEN     = {}   # {match_id: feature_vector}  live snapshots awaiting outcome
 _NN_LAST_TRAIN  = 0
-NN_MIN_SAMPLES  = 50   # start training after this many labelled samples
-NN_RETRAIN_INT  = 1800 # retrain every 30 min max
-NN_N_IN         = 8    # number of input features
+NN_MIN_SAMPLES  = 30   # start training after this many labelled samples
+NN_RETRAIN_INT  = 900  # retrain every 15 min max
+NN_N_IN         = 12   # number of input features (8 base + elo diff + elo strength + 2x win-rate)
 _NN_WEIGHTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'nn_weights.json')
 _ELO_FILE        = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'elo_db.json')
 _PAT_FILE        = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pat_db.json')
@@ -196,7 +202,15 @@ def _norm(name):
 
 
 def _elo_get(name):
-    return _ELO_DB.get(_norm(name), ELO_DEF)
+    nm = _norm(name)
+    if nm not in _ELO_DB:
+        # Seed from external ratings if available (better than default 1500)
+        ext = _EXT_RATING_DB.get(nm)
+        if ext:
+            seeded = ELO_DEF + max(-300, min(300, (ext - 1500)))
+            with _ELO_LOCK:
+                _ELO_DB[nm] = seeded
+    return _ELO_DB.get(nm, ELO_DEF)
 
 def _elo_expected(r1, r2):
     return 1.0 / (1 + 10 ** ((r2 - r1) / 400))
@@ -274,7 +288,7 @@ def _db_stats(name):
 
 
 def get_local_player_stats(p1_name, p2_name):
-    """Stats from our self-built database (Leon results)."""
+    """Stats from our self-built database (Leon results) + cached external H2H."""
     p1 = _db_stats(p1_name)
     p2 = _db_stats(p2_name)
     h2h = None
@@ -282,27 +296,55 @@ def get_local_player_stats(p1_name, p2_name):
     d = PLAYER_DB.get(hn, {})
     opp = d.get('opp', {}).get(an)
     if opp and sum(opp) > 0:
-        h2h = {'p1Wins': opp[0], 'p2Wins': opp[1], 'total': sum(opp)}
+        h2h = {'p1Wins': opp[0], 'p2Wins': opp[1], 'total': sum(opp), 'source': 'leon'}
+    # Merge in external H2H if local has <3 meetings
+    if (not h2h or h2h['total'] < 3) and _HAS_BS4:
+        ext_key = _h2h_ext_key(p1_name, p2_name)
+        with _H2H_EXT_LOCK:
+            ext = _H2H_EXT_CACHE.get(ext_key)
+        if ext and ext.get('total', 0) > 0:
+            if not h2h:
+                h2h = ext
+            elif ext['total'] > h2h['total']:
+                h2h = ext  # prefer richer external record
     r1 = round(_elo_get(p1_name))
     r2 = round(_elo_get(p2_name))
+    ext_r1 = _EXT_RATING_DB.get(hn)
+    ext_r2 = _EXT_RATING_DB.get(an)
     return {
         'p1': p1, 'p2': p2, 'h2h': h2h,
         'source': 'leon-local', 'dbSize': len(PLAYER_DB),
         'elo': {'p1': r1, 'p2': r2, 'homeProb': round(_elo_expected(r1, r2), 3),
                 'p1Name': p1_name, 'p2Name': p2_name},
+        'extRating': {'p1': ext_r1, 'p2': ext_r2} if (ext_r1 or ext_r2) else None,
     }
 
 
 # ── Neural Network ────────────────────────────────────────────────────────────
 
 def _extract_features(ev):
-    """8-feature normalised vector from a parsed TT event dict."""
+    """12-feature normalised vector from a parsed TT event dict.
+    Base 8 features + Elo diff + Elo strength + home/away win-rate delta."""
     hs  = float(ev.get('homeSets', 0))
     aws = float(ev.get('awaySets', 0))
     clh = float(ev.get('currentHomePts', 0))
     cla = float(ev.get('currentAwayPts', 0))
     w1  = float(ev.get('w1Odds') or 0)
     w2  = float(ev.get('w2Odds') or 0)
+    # Elo features (GIL-safe dict reads)
+    hn     = _norm(ev.get('homeTeam', ''))
+    an     = _norm(ev.get('awayTeam', ''))
+    elo_h  = _ELO_DB.get(hn, ELO_DEF)
+    elo_a  = _ELO_DB.get(an, ELO_DEF)
+    elo_d  = max(-1.5, min(1.5, (elo_h - elo_a) / 200.0))
+    elo_s  = max(-1.5, min(1.5, (elo_h - ELO_DEF) / 150.0))
+    # Player win-rate features
+    ph     = PLAYER_DB.get(hn, {})
+    pa     = PLAYER_DB.get(an, {})
+    tot_h  = max(1, ph.get('wins', 0) + ph.get('losses', 0))
+    tot_a  = max(1, pa.get('wins', 0) + pa.get('losses', 0))
+    wr_h   = max(-0.5, min(0.5, ph.get('wins', 0) / tot_h - 0.5))
+    wr_a   = max(-0.5, min(0.5, pa.get('wins', 0) / tot_a - 0.5))
     return [
         math.log(w2 / w1) if w1 > 1.01 and w2 > 1.01 else 0.0,   # log-odds (market)
         (hs  - aws) / 3.0,                                          # set lead
@@ -312,6 +354,10 @@ def _extract_features(ev):
         (1.0/w1 - 1.0/w2) if w1 > 1 and w2 > 1 else 0.0,          # implied prob diff
         1.0 if hs > aws else (-1.0 if aws > hs else 0.0),           # set leader sign
         1.0 if w1 < w2 else (-1.0 if w2 < w1 else 0.0),            # odds leader sign
+        elo_d,                                                        # elo difference
+        elo_s,                                                        # home elo strength
+        wr_h,                                                         # home win-rate delta
+        wr_a,                                                         # away win-rate delta
     ]
 
 
@@ -611,6 +657,209 @@ def get_player_stats(p1_name, p2_name):
     with _PLAYER_LOCK:
         _PLAYER_CACHE[cache_key] = {'data': result, 'ts': now}
     return result
+
+
+# ── External Scraping (BeautifulSoup4) ───────────────────────────────────────
+
+_H2H_EXT_CACHE = {}   # {norm_key: {p1Wins, p2Wins, total, source, ts}}
+_H2H_EXT_LOCK  = threading.Lock()
+_EXT_RATING_DB = {}   # {norm_name: int_rating}  from external sources
+_EXT_RATING_TS = 0
+H2H_EXT_TTL    = 3600 * 6   # 6 h
+RATING_TTL     = 3600 * 12  # 12 h
+
+
+def _bs4_get(url, timeout=10, extra_headers=None):
+    """Fetch URL, parse with BS4. Returns soup or None."""
+    if not _HAS_BS4:
+        return None
+    try:
+        hdrs = {
+            'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                           'AppleWebKit/537.36 (KHTML, like Gecko) '
+                           'Chrome/124.0.0.0 Safari/537.36'),
+            'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8',
+            'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8',
+        }
+        if extra_headers:
+            hdrs.update(extra_headers)
+        req = urllib.request.Request(url, headers=hdrs)
+        with urllib.request.urlopen(req, context=SSL_CTX, timeout=timeout) as r:
+            html = r.read().decode('utf-8', errors='replace')
+        return BeautifulSoup(html, 'lxml')
+    except Exception as ex:
+        print(f'[bs4] {url[:60]}: {ex}')
+        return None
+
+
+def _h2h_ext_key(p1, p2):
+    a, b = sorted([_norm(p1), _norm(p2)])
+    return f'{a}|{b}'
+
+
+def _scrape_betexplorer_h2h(p1_name, p2_name):
+    """H2H from betexplorer.com/table-tennis — static server-rendered HTML."""
+    try:
+        q1 = urllib.parse.quote(p1_name)
+        q2 = urllib.parse.quote(p2_name)
+        # Search for match H2H on betexplorer
+        url = f'https://www.betexplorer.com/table-tennis/search/?q={q1}+{q2}'
+        soup = _bs4_get(url, timeout=8)
+        if not soup:
+            return None
+        text = soup.get_text(' ', strip=True)
+        # Try to extract win counts from any pattern like "5-3" or "5 : 3"
+        m = _re.search(r'\b(\d{1,2})\s*[-:]\s*(\d{1,2})\b', text[:2000])
+        if m:
+            w1, w2 = int(m.group(1)), int(m.group(2))
+            if 1 <= w1 + w2 <= 50:
+                return {'p1Wins': w1, 'p2Wins': w2, 'total': w1 + w2, 'source': 'betexplorer'}
+    except Exception as ex:
+        print(f'[h2h-bex] {ex}')
+    return None
+
+
+def _scrape_mytabletennis_h2h(p1_name, p2_name):
+    """H2H from mytabletennis.net player search + H2H page."""
+    try:
+        def _find_id(name):
+            q = urllib.parse.quote(name.strip())
+            soup = _bs4_get(f'https://www.mytabletennis.net/search/players/?q={q}', timeout=8)
+            if not soup:
+                return None
+            for a in soup.find_all('a', href=True):
+                m = _re.search(r'/events/player/(\d+)', a['href'])
+                if m:
+                    return m.group(1)
+            return None
+
+        id1 = _find_id(p1_name)
+        id2 = _find_id(p2_name)
+        if not id1 or not id2:
+            return None
+        soup = _bs4_get(f'https://www.mytabletennis.net/events/h2h/{id1}/{id2}/', timeout=8)
+        if not soup:
+            return None
+        text = soup.get_text(' ', strip=True)
+        m = _re.search(r'(\d+)\s*[-:]\s*(\d+)', text[:1000])
+        if m:
+            w1, w2 = int(m.group(1)), int(m.group(2))
+            if 1 <= w1 + w2 <= 100:
+                return {'p1Wins': w1, 'p2Wins': w2, 'total': w1 + w2, 'source': 'mytabletennis'}
+    except Exception as ex:
+        print(f'[h2h-mtt] {ex}')
+    return None
+
+
+def get_h2h_external(p1_name, p2_name):
+    """Get H2H from external scrapers. Cached 6h. Never raises."""
+    key = _h2h_ext_key(p1_name, p2_name)
+    now = time.time()
+    with _H2H_EXT_LOCK:
+        c = _H2H_EXT_CACHE.get(key)
+        if c and now - c.get('ts', 0) < H2H_EXT_TTL:
+            return c
+    result = None
+    for fn in (_scrape_mytabletennis_h2h, _scrape_betexplorer_h2h):
+        try:
+            r = fn(p1_name, p2_name)
+            if r:
+                result = r
+                break
+        except Exception:
+            continue
+    if result:
+        result['ts'] = now
+        with _H2H_EXT_LOCK:
+            _H2H_EXT_CACHE[key] = result
+    return result
+
+
+def _scrape_tt_ratings_setka():
+    """
+    Scrape Setka Cup standings to seed _EXT_RATING_DB with real player ranks.
+    Setka Cup HTML pages have static tables with player names + stats.
+    """
+    global _EXT_RATING_TS
+    now = time.time()
+    if now - _EXT_RATING_TS < RATING_TTL:
+        return
+    urls = [
+        'https://setka-cup.com/en/standings',
+        'https://setka-cup.com/standings',
+        'https://setka-cup.com/players',
+    ]
+    found = 0
+    for url in urls:
+        soup = _bs4_get(url, timeout=12)
+        if not soup:
+            continue
+        # Look for table rows with player name + numeric rank/rating
+        for row in soup.find_all('tr'):
+            cells = row.find_all(['td', 'th'])
+            if len(cells) < 3:
+                continue
+            name_cell = cells[1] if len(cells) > 1 else cells[0]
+            name = name_cell.get_text(strip=True)
+            if not name or len(name) < 3:
+                continue
+            # Try to find a numeric rating/points in subsequent cells
+            for cell in cells[2:]:
+                t = cell.get_text(strip=True)
+                if _re.match(r'^\d{3,5}$', t):
+                    rating = int(t)
+                    if 100 <= rating <= 9999:
+                        _EXT_RATING_DB[_norm(name)] = rating
+                        found += 1
+                        break
+        if found > 5:
+            break
+    if found:
+        _EXT_RATING_TS = now
+        print(f'[ratings] Loaded {found} external ratings from Setka')
+
+
+def _scrape_tt_ratings_ttdaily():
+    """Scrape tt-daily.ru for Russian TT player ratings."""
+    global _EXT_RATING_TS
+    now = time.time()
+    if now - _EXT_RATING_TS < RATING_TTL:
+        return
+    soup = _bs4_get('https://tt-daily.ru/ratings/', timeout=12)
+    if not soup:
+        return
+    found = 0
+    for row in soup.find_all('tr'):
+        cells = row.find_all(['td', 'th'])
+        if len(cells) < 2:
+            continue
+        for i, cell in enumerate(cells):
+            t = cell.get_text(strip=True)
+            if _re.match(r'^\d{3,5}$', t) and i > 0:
+                name = cells[i - 1].get_text(strip=True)
+                if name and len(name) > 2:
+                    _EXT_RATING_DB[_norm(name)] = int(t)
+                    found += 1
+    if found:
+        _EXT_RATING_TS = now
+        print(f'[ratings] Loaded {found} ratings from tt-daily.ru')
+
+
+def get_ext_rating(player_name):
+    """Return external rating for player, or None."""
+    return _EXT_RATING_DB.get(_norm(player_name))
+
+
+def _pre_fetch_ratings():
+    """Background thread: pre-load external ratings on startup."""
+    time.sleep(15)  # wait for server to stabilise
+    for fn in (_scrape_tt_ratings_setka, _scrape_tt_ratings_ttdaily):
+        try:
+            fn()
+            if _EXT_RATING_DB:
+                break
+        except Exception as ex:
+            print(f'[pre-fetch] {ex}')
 
 
 def _league_name(ev):
@@ -1089,8 +1338,18 @@ def build_tt_prompt(p1, p2, score, homeProb, ev, w1, w2, stats):
         mgn = f" / ср.разрыв {st['avgMargin']:.1f}оч" if st.get('avgMargin') else ''
         return f'{name}: побед {wr}{swr}{mgn}, форма {frm}'
 
-    h2h_str = f"{h2h.get('p1Wins',0)}-{h2h.get('p2Wins',0)} из {h2h.get('total',0)}" \
-              if h2h and h2h.get('total', 0) >= 2 else 'нет данных'
+    h2h_str = (f"{h2h.get('p1Wins',0)}-{h2h.get('p2Wins',0)} из {h2h.get('total',0)}"
+               f" [{h2h.get('source','local')}]"
+               if h2h and h2h.get('total', 0) >= 2 else 'нет данных')
+    ext = stats.get('extRating') or {}
+    ext_str = ''
+    if ext.get('p1') or ext.get('p2'):
+        ext_str = f"\nВнешние рейтинги: {p1} = {ext.get('p1','?')}, {p2} = {ext.get('p2','?')}"
+
+    elo_info = stats.get('elo') or {}
+    elo_str = (f"\nElo рейтинги: {p1} = {elo_info.get('p1',1500)}, {p2} = {elo_info.get('p2',1500)}"
+               f" (вер. по Elo: {elo_info.get('homeProb',0.5)*100:.0f}%)"
+               if elo_info else '')
 
     return f"""Ты эксперт-аналитик ставок на настольный теннис. Проведи краткий анализ матча.
 
@@ -1101,7 +1360,7 @@ def build_tt_prompt(p1, p2, score, homeProb, ev, w1, w2, stats):
 Статистика из архива:
 - {fmt_player(p1, p1s)}
 - {fmt_player(p2, p2s)}
-- H2H ({p1} vs {p2}): {h2h_str}
+- H2H ({p1} vs {p2}): {h2h_str}{ext_str}{elo_str}
 
 Математическая модель: {p1} = {homeProb}%, EV ставки = {ev}%
 
@@ -1223,6 +1482,8 @@ class Handler(SimpleHTTPRequestHandler):
             self._elo_api()
         elif self.path.startswith('/api/nn-stats'):
             self._nn_stats_api()
+        elif self.path.startswith('/api/h2h'):
+            self._h2h_api()
         elif self.path == '/health':
             self.send_response(200)
             self.send_header('Content-Type', 'text/plain')
@@ -1391,6 +1652,37 @@ class Handler(SimpleHTTPRequestHandler):
         except Exception as ex:
             self._json_resp(500, {'error': str(ex)})
 
+    def _h2h_api(self):
+        try:
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            p1 = qs.get('p1', [''])[0].strip()
+            p2 = qs.get('p2', [''])[0].strip()
+            if not p1 or not p2:
+                self._json_resp(400, {'error': 'p1 and p2 required'}); return
+            # Local DB H2H first (instant)
+            local = get_local_player_stats(p1, p2)
+            h2h_local  = local.get('h2h')
+            elo_data   = {'p1': local.get('elo', {}).get('p1', ELO_DEF),
+                          'p2': local.get('elo', {}).get('p2', ELO_DEF)}
+            ext_rating = {'p1': get_ext_rating(p1), 'p2': get_ext_rating(p2)}
+            # External H2H in background thread — return cached if available
+            h2h_ext = None
+            with _H2H_EXT_LOCK:
+                h2h_ext = _H2H_EXT_CACHE.get(_h2h_ext_key(p1, p2))
+            if not h2h_ext:
+                threading.Thread(target=get_h2h_external, args=(p1, p2), daemon=True).start()
+            self._json_resp(200, {
+                'p1': p1, 'p2': p2,
+                'h2h_local':   h2h_local,
+                'h2h_external': h2h_ext,
+                'elo':         elo_data,
+                'ext_rating':  ext_rating,
+                'extRatingDB': len(_EXT_RATING_DB),
+                'bs4':         _HAS_BS4,
+            })
+        except Exception as ex:
+            self._json_resp(500, {'error': str(ex)})
+
     def log_message(self, fmt, *args):
         if args and '/api/' in str(args[0]):
             print(f'  [{time.strftime("%H:%M:%S")}] {args[0]} {args[1]}')
@@ -1411,6 +1703,7 @@ def main():
     _pat_load()
     _player_db_load()
     threading.Thread(target=_periodic_save, daemon=True).start()
+    threading.Thread(target=_pre_fetch_ratings, daemon=True).start()
     server = HTTPServer((host, PORT), Handler)
     if PORT == 8080 and os.environ.get('RENDER') is None:
         def _open():

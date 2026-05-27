@@ -2,7 +2,7 @@ services:
   - type: web
     name: tt-live
     runtime: python
-    buildCommand: ""
+    buildCommand: "pip install -r requirements.txt"
     startCommand: python server.py
     healthCheckPath: /health
     envVars:
