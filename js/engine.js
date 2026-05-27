@@ -295,13 +295,13 @@ const Engine = (() => {
       return 'none';
     }
 
-    // HIGH: сильный EV + высокая вероятность + хотя бы 1 подтверждение
-    if (evPct >= 6.5 && prob >= 0.65 && instab <= 0.22 && confirmations >= 1) return 'high';
-    if (evPct >= 8.0 && prob >= 0.64 && instab <= 0.25) return 'high';
+    // HIGH: сильный EV + высокая вероятность + подтверждение
+    if (evPct >= 9.0 && prob >= 0.68 && instab <= 0.20 && confirmations >= 1) return 'high';
+    if (evPct >= 11.0 && prob >= 0.67 && instab <= 0.22) return 'high';
 
     // MEDIUM: хорошая математика + подтверждение
-    if (evPct >= 4.5 && prob >= 0.63 && instab <= 0.30 && confirmations >= 1) return 'medium';
-    if (evPct >= 5.5 && prob >= 0.64 && instab <= 0.26) return 'medium';
+    if (evPct >= 6.0 && prob >= 0.65 && instab <= 0.28 && confirmations >= 1) return 'medium';
+    if (evPct >= 7.5 && prob >= 0.66 && instab <= 0.24) return 'medium';
 
     return 'none';
   }
@@ -371,8 +371,9 @@ const Engine = (() => {
     const matchModel = matchWinProb(homeSets, awaySets, setWinFinal, stw);
     const mktProbs   = noVigProb(w1Odds, w2Odds);
 
-    // Финальная вероятность: блендинг модели и рынка (доверяем модели больше)
-    const modelWeight = Math.min(0.82, 0.62 + doneSets.length * 0.08);
+    // Финальная вероятность: блендинг модели и рынка
+    // Рынок знает многое — даём ему 45-50% веса, модели 50-55%
+    const modelWeight = Math.min(0.58, 0.48 + doneSets.length * 0.05);
     let trueHome = Math.max(0.05, Math.min(0.95,
       modelWeight * matchModel + (1 - modelWeight) * mktProbs.home
     ));
@@ -382,32 +383,28 @@ const Engine = (() => {
     if (hist.agree !== null && hist.strength > 0.15) {
       const dir = trueHome > 0.5 ? 1 : -1;
       if (hist.agree) {
-        // Архив подтверждает — усиливаем уверенность
-        trueHome = Math.min(0.92, trueHome + dir * hist.strength * 0.07);
+        trueHome = Math.min(0.85, trueHome + dir * hist.strength * 0.05);
       } else {
-        // Архив противоречит — ослабляем к 0.5
-        trueHome = 0.5 + (trueHome - 0.5) * (1 - hist.strength * 0.45);
+        trueHome = 0.5 + (trueHome - 0.5) * (1 - hist.strength * 0.50);
       }
-      trueHome = Math.max(0.05, Math.min(0.95, trueHome));
+      trueHome = Math.max(0.05, Math.min(0.87, trueHome));
     }
 
     // ── Стим (умные деньги) ────────────────────────────────
     const steam = steamSignal(oddsMovement, trueHome > 0.5);
     if (steam.agrees === true && steam.strength > 0.2) {
-      // Умные деньги на нашего игрока — усиливаем
       const dir = trueHome > 0.5 ? 1 : -1;
-      trueHome = Math.min(0.93, trueHome + dir * steam.strength * 0.06);
+      trueHome = Math.min(0.85, trueHome + dir * steam.strength * 0.05);
     } else if (steam.agrees === false && steam.strength > 0.3) {
-      // Умные деньги против нашего игрока — ослабляем
-      trueHome = 0.5 + (trueHome - 0.5) * (1 - steam.strength * 0.4);
+      trueHome = 0.5 + (trueHome - 0.5) * (1 - steam.strength * 0.50);
     }
-    trueHome = Math.max(0.05, Math.min(0.95, trueHome));
+    trueHome = Math.max(0.05, Math.min(0.87, trueHome));
 
-    // Доминирование: если дом. игрок выигрывает разгромом — поддерживаем прогноз
+    // Доминирование: слабый буст, не раздуваем уверенность
     if (domData.decisive && domData.score > 0.3) {
-      trueHome = Math.min(0.93, trueHome + 0.025);
+      trueHome = Math.min(0.85, trueHome + 0.015);
     } else if (domData.decisive && domData.score < -0.3) {
-      trueHome = Math.max(0.07, trueHome - 0.025);
+      trueHome = Math.max(0.07, trueHome - 0.015);
     }
 
     // ── Elo коррекция ─────────────────────────────────────
@@ -416,11 +413,11 @@ const Engine = (() => {
       const eloDir   = eloProb > 0.5 ? 1 : -1;
       const modelDir = trueHome > 0.5 ? 1 : -1;
       if (eloDir === modelDir) {
-        trueHome = Math.min(0.92, trueHome + eloDir * Math.abs(eloProb - 0.5) * 0.04);
+        trueHome = Math.min(0.85, trueHome + eloDir * Math.abs(eloProb - 0.5) * 0.03);
       } else {
-        trueHome = 0.5 + (trueHome - 0.5) * 0.94;
+        trueHome = 0.5 + (trueHome - 0.5) * 0.92;
       }
-      trueHome = Math.max(0.05, Math.min(0.95, trueHome));
+      trueHome = Math.max(0.05, Math.min(0.87, trueHome));
     }
 
     // ── Серия очков (runs boost) ──────────────────────────
@@ -428,9 +425,17 @@ const Engine = (() => {
       const runDir   = scoreData.recentRun > 0 ? 1 : -1;
       const modelDir = trueHome > 0.5 ? 1 : -1;
       if (runDir === modelDir) {
-        trueHome = Math.min(0.93, Math.max(0.07, trueHome + runDir * 0.012));
+        trueHome = Math.min(0.87, Math.max(0.07, trueHome + runDir * 0.010));
       }
     }
+
+    // ── Ограничение: модель не может уходить более чем на 17pp от рынка ──────
+    // Рынок (Леон) видит реальные ставки профессионалов — это ценная информация
+    const mktHome = mktProbs.home;
+    const MAX_MARKET_DEVIATION = 0.17;
+    trueHome = Math.max(mktHome - MAX_MARKET_DEVIATION,
+                 Math.min(mktHome + MAX_MARKET_DEVIATION, trueHome));
+    trueHome = Math.max(0.08, Math.min(0.87, trueHome));
 
     // ── Нейросеть (обученная на матчах Леона) ─────────────
     const nnProb = (typeof event.nnProb === 'number') ? event.nnProb : null;
@@ -441,11 +446,11 @@ const Engine = (() => {
         const nnDir    = nnP      > 0.5 ? 1 : -1;
         const modelDir = trueHome > 0.5 ? 1 : -1;
         if (nnDir === modelDir) {
-          trueHome = Math.min(0.93, trueHome + nnDir * delta * 0.06);
+          trueHome = Math.min(0.85, trueHome + nnDir * delta * 0.04);
         } else {
-          trueHome = 0.5 + (trueHome - 0.5) * 0.88;
+          trueHome = 0.5 + (trueHome - 0.5) * 0.85;
         }
-        trueHome = Math.max(0.05, Math.min(0.95, trueHome));
+        trueHome = Math.max(0.05, Math.min(0.87, trueHome));
       }
     }
     const nnAgrees = (nnProb !== null && Math.abs(nnProb/100 - 0.5) >= 0.07)
@@ -490,8 +495,8 @@ const Engine = (() => {
       if (!isActionable(homeSets, awaySets)) return;
       // Не прогнозируем в самом начале матча
       if (setsPlayed === 0 && (currentHomePts + currentAwayPts) < 8) return;
-      // Требуем ощутимое расхождение с рынком
-      if (mktProb !== null && mktProb !== undefined && Math.abs(prob - mktProb) < 0.07) return;
+      // Требуем значимое расхождение с рынком (минимум 10pp)
+      if (mktProb !== null && mktProb !== undefined && Math.abs(prob - mktProb) < 0.10) return;
       const sig = signalLevel(evPct, prob, instab, hist.agree, hist.strength, steam.agrees, domData.score, nnAgrees);
       if (sig === 'none') return;
       preds.push({
