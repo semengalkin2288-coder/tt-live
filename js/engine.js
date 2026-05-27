@@ -421,98 +421,85 @@ const Engine = (() => {
     if (mktSwP_total !== null)                        { swpSum += mktSwP_total * 0.5; swpW += 0.5; }
     const mktSetWinP = swpSum / swpW;
 
-    // Наша модель: моментум из СЫГРАННЫХ сетов (не текущего) + история
+    // setWinFinal: используется только для DP-расчётов (гандикап, тотал, дистрибуция)
+    // Привязан к рыночному консенсусу ±8pp — текущий счёт не раздувает вероятность
     const histWeight = Math.min(0.45, doneSets.length * 0.15);
     const setWinRaw2 = Math.max(0.05, Math.min(0.95,
       (1 - histWeight) * setWinRaw + histWeight * (avgSetWin + momentumAdj)
     ));
-    // Максимальное отклонение от рыночного консенсуса ±8pp
     const setWinFinal = Math.max(mktSetWinP - 0.08, Math.min(mktSetWinP + 0.08, setWinRaw2));
 
-    const matchModel = matchWinProb(homeSets, awaySets, setWinFinal, stw);
+    // ════════════════════════════════════════════════════════════
+    // КЛЮЧЕВОЙ ПРИНЦИП: trueHome строится ТОЛЬКО из внешних данных
+    // Рынок Леона уже учёл текущий счёт — мы не можем его "перехитрить" счётом.
+    // Единственный реальный edge: H2H / ELO / форма / умные деньги
+    // противоречат тому, что рынок закладывает в котировки.
+    // ════════════════════════════════════════════════════════════
 
-    // Финальная вероятность: преимущественно рынок, корректировка от внешних факторов
-    const modelWeight = Math.min(0.40, 0.25 + doneSets.length * 0.05);
-    let trueHome = Math.max(0.05, Math.min(0.95,
-      modelWeight * matchModel + (1 - modelWeight) * mktProbs.home
-    ));
+    // Базовая линия = рыночная вероятность (живая, учитывает всё публичное)
+    let trueHome = mktProbs.home;
 
-    // ── Архивная коррекция ────────────────────────────────
+    // ── Архив (H2H + форма) ──────────────────────────────
+    // Рынок не всегда полностью учитывает долгосрочные H2H-тенденции
     const hist = evalHistory(history, trueHome > 0.5);
-    if (hist.agree !== null && hist.strength > 0.15) {
+    if (hist.agree !== null && hist.strength > 0.18) {
       const dir = trueHome > 0.5 ? 1 : -1;
       if (hist.agree) {
-        trueHome = Math.min(0.85, trueHome + dir * hist.strength * 0.05);
+        // Архив подтверждает: осторожный буст пропорционально силе подтверждения
+        trueHome += dir * hist.strength * 0.06;
       } else {
-        trueHome = 0.5 + (trueHome - 0.5) * (1 - hist.strength * 0.50);
+        // Архив против: более агрессивное снижение (рынок может ошибаться)
+        trueHome = 0.5 + (trueHome - 0.5) * (1 - hist.strength * 0.45);
       }
-      trueHome = Math.max(0.05, Math.min(0.87, trueHome));
     }
 
-    // ── Стим (умные деньги) ────────────────────────────────
-    const steam = steamSignal(oddsMovement, trueHome > 0.5);
-    if (steam.agrees === true && steam.strength > 0.2) {
-      const dir = trueHome > 0.5 ? 1 : -1;
-      trueHome = Math.min(0.85, trueHome + dir * steam.strength * 0.05);
-    } else if (steam.agrees === false && steam.strength > 0.3) {
-      trueHome = 0.5 + (trueHome - 0.5) * (1 - steam.strength * 0.50);
-    }
-    trueHome = Math.max(0.05, Math.min(0.87, trueHome));
-
-    // Доминирование: слабый буст, не раздуваем уверенность
-    if (domData.decisive && domData.score > 0.3) {
-      trueHome = Math.min(0.85, trueHome + 0.015);
-    } else if (domData.decisive && domData.score < -0.3) {
-      trueHome = Math.max(0.07, trueHome - 0.015);
-    }
-
-    // ── Elo коррекция ─────────────────────────────────────
+    // ── ELO (долгосрочная сила игрока) ────────────────────
     const eloProb = history?.elo?.homeProb;
-    if (eloProb !== undefined && Math.abs(eloProb - 0.5) >= 0.05) {
-      const eloDir   = eloProb > 0.5 ? 1 : -1;
-      const modelDir = trueHome > 0.5 ? 1 : -1;
-      if (eloDir === modelDir) {
-        trueHome = Math.min(0.85, trueHome + eloDir * Math.abs(eloProb - 0.5) * 0.03);
-      } else {
-        trueHome = 0.5 + (trueHome - 0.5) * 0.92;
-      }
-      trueHome = Math.max(0.05, Math.min(0.87, trueHome));
-    }
-
-    // ── Серия очков (runs boost) ──────────────────────────
-    if (scoreData && scoreData.recentRun !== 0) {
-      const runDir   = scoreData.recentRun > 0 ? 1 : -1;
-      const modelDir = trueHome > 0.5 ? 1 : -1;
-      if (runDir === modelDir) {
-        trueHome = Math.min(0.87, Math.max(0.07, trueHome + runDir * 0.010));
+    if (eloProb !== undefined && Math.abs(eloProb - 0.5) >= 0.07) {
+      const eloGap  = eloProb - mktProbs.home; // насколько ELO расходится с рынком
+      if (Math.abs(eloGap) >= 0.07) {
+        // ELO и рынок расходятся — частично доверяем ELO
+        trueHome += eloGap * 0.25; // берём 25% от расхождения
       }
     }
 
-    // ── Ограничение: модель не может уходить более чем на 10pp от рынка ──────
-    // Рынок Леона обновляется в реальном времени по живым котировкам.
-    // Реальный edge — только от H2H/архива/стима, не от текущего счёта (рынок его видит).
+    // ── Умные деньги (стим) ───────────────────────────────
+    // Движение котировок показывает куда идут крупные ставки — самый надёжный сигнал
+    const steam = steamSignal(oddsMovement, trueHome > 0.5);
+    if (steam.agrees === true && steam.strength > 0.15) {
+      const dir = trueHome > 0.5 ? 1 : -1;
+      trueHome += dir * steam.strength * 0.05;
+    } else if (steam.agrees === false) {
+      // Умные деньги против — снижаем уверенность
+      trueHome = 0.5 + (trueHome - 0.5) * (1 - steam.strength * 0.55);
+    }
+
+    // ── Доминирование по СЫГРАННЫМ сетам (не текущему счёту) ─
+    // Кто выигрывал сеты более убедительно — слабый сигнал
+    if (doneSets.length >= 2 && domData.decisive) {
+      const domDir = domData.score > 0 ? 1 : -1;
+      trueHome += domDir * Math.min(0.02, Math.abs(domData.score) * 0.02);
+    }
+
+    // ── NN (обученная на матчах Леона) ────────────────────
+    const nnProb = (typeof event.nnProb === 'number') ? event.nnProb : null;
+    if (nnProb !== null) {
+      const nnP = nnProb / 100;
+      const nnGap = nnP - mktProbs.home;
+      if (Math.abs(nnGap) >= 0.08) {
+        trueHome += nnGap * 0.15; // доверяем NN на 15% от расхождения с рынком
+      }
+    }
+
+    // ── Жёсткое ограничение отклонения от рынка ───────────
+    // Максимум ±10pp: реальный информационный edge не бывает больше
     const mktHome = mktProbs.home;
     const MAX_MARKET_DEVIATION = 0.10;
     trueHome = Math.max(mktHome - MAX_MARKET_DEVIATION,
                  Math.min(mktHome + MAX_MARKET_DEVIATION, trueHome));
     trueHome = Math.max(0.08, Math.min(0.87, trueHome));
 
-    // ── Нейросеть (обученная на матчах Леона) ─────────────
     const nnProb = (typeof event.nnProb === 'number') ? event.nnProb : null;
-    if (nnProb !== null) {
-      const nnP   = nnProb / 100;
-      const delta = Math.abs(nnP - 0.5);
-      if (delta >= 0.07) {
-        const nnDir    = nnP      > 0.5 ? 1 : -1;
-        const modelDir = trueHome > 0.5 ? 1 : -1;
-        if (nnDir === modelDir) {
-          trueHome = Math.min(0.85, trueHome + nnDir * delta * 0.04);
-        } else {
-          trueHome = 0.5 + (trueHome - 0.5) * 0.85;
-        }
-        trueHome = Math.max(0.05, Math.min(0.87, trueHome));
-      }
-    }
     const nnAgrees = (nnProb !== null && Math.abs(nnProb/100 - 0.5) >= 0.07)
       ? (nnProb > 50) === (trueHome > 0.5)
       : null;
