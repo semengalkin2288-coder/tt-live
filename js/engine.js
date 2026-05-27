@@ -395,31 +395,25 @@ const Engine = (() => {
     // A) setWinP из котировок победителя
     const mktSwP_match = impliedSetWinP(mktProbs.home, homeSets, awaySets, stw);
 
-    // B) setWinP из котировок гандикапа (если доступен)
+    // B) setWinP из котировок гандикапа (только если ставка ещё достижима)
     let mktSwP_hdp = null;
     if (hdpHomeOdds && hdpAwayOdds && hdpLine !== null && hdpLine !== undefined) {
-      const mktHdpProbs = noVigProb(hdpHomeOdds, hdpAwayOdds);
-      mktSwP_hdp = impliedSetWinPFromHdp(mktHdpProbs.home, homeSets, awaySets, hdpLine, stw);
+      const bestHomeNet = stw - awaySets;
+      const hdpAchievable = bestHomeNet + hdpLine > 0;   // home может ещё покрыть
+      if (hdpAchievable) {
+        const mktHdpProbs = noVigProb(hdpHomeOdds, hdpAwayOdds);
+        const candidate = impliedSetWinPFromHdp(mktHdpProbs.home, homeSets, awaySets, hdpLine, stw);
+        if (candidate !== null && isFinite(candidate) && candidate > 0.05 && candidate < 0.95) {
+          mktSwP_hdp = candidate;
+        }
+      }
     }
 
-    // C) setWinP из тотала: тотал ≈ ожидаемое количество очков
-    // Длинный матч (5 сетов) = игроки равны ≈ setWinP ≈ 0.5
-    // Короткий матч (3 сета) = явный фаворит ≈ setWinP далеко от 0.5
-    let mktSwP_total = null;
-    if (totalOverOdds && totalUnderOdds && totalLine) {
-      const mktTotProbs = noVigProb(totalOverOdds, totalUnderOdds);
-      // over > 50% → матч будет длинным → игроки ближе к равному → setWinP ближе к 0.5
-      // Нормализация: P(long match | setWinP=p) через expectedMatchPts
-      // Простая оценка: смещение к 0.5 пропорционально P(over)
-      const longBias = (mktTotProbs.home - 0.5) * 0.12; // осторожная оценка
-      mktSwP_total = Math.max(0.1, Math.min(0.9, 0.5 - longBias * (mktSwP_match > 0.5 ? 1 : -1)));
-    }
-
-    // Взвешенное среднее по доступным рынкам
-    let swpSum = mktSwP_match, swpW = 1.0;
-    if (mktSwP_hdp !== null && isFinite(mktSwP_hdp)) { swpSum += mktSwP_hdp * 1.2; swpW += 1.2; }
-    if (mktSwP_total !== null)                        { swpSum += mktSwP_total * 0.5; swpW += 0.5; }
-    const mktSetWinP = swpSum / swpW;
+    // Итоговый консенсус: матч (основной) + гандикап (если доступен, вес x1.3)
+    // Тотал очков не используем для setWinP — он измеряет очки, не силу сетов
+    const mktSetWinP = mktSwP_hdp !== null
+      ? (mktSwP_match + mktSwP_hdp * 1.3) / 2.3
+      : mktSwP_match;
 
     // setWinFinal: используется только для DP-расчётов (гандикап, тотал, дистрибуция)
     // Привязан к рыночному консенсусу ±8pp — текущий счёт не раздувает вероятность
@@ -499,7 +493,6 @@ const Engine = (() => {
                  Math.min(mktHome + MAX_MARKET_DEVIATION, trueHome));
     trueHome = Math.max(0.08, Math.min(0.87, trueHome));
 
-    const nnProb = (typeof event.nnProb === 'number') ? event.nnProb : null;
     const nnAgrees = (nnProb !== null && Math.abs(nnProb/100 - 0.5) >= 0.07)
       ? (nnProb > 50) === (trueHome > 0.5)
       : null;
@@ -684,8 +677,8 @@ const Engine = (() => {
     if (steam.agrees === true  && steam.strength > 0.2) hotScore += 3;
     if (steam.agrees === false) hotScore -= 4;
     if (Math.abs(domData.score) >= 0.4) hotScore += (domData.score > 0) === (trueHome > 0.5) ? 2 : -2;
-    if (momentumAdj > 5)  hotScore += 2;
-    if (momentumAdj < -5) hotScore -= 2;
+    if (momentumAdj > 0.04)  hotScore += 2;
+    if (momentumAdj < -0.04) hotScore -= 2;
     if (instab < 0.15) hotScore += 1;
     if (instab > 0.35) hotScore -= 2;
     if (setsPlayed >= 2) hotScore += 1;
