@@ -106,6 +106,32 @@ const Engine = (() => {
     return dp(hSets, aSets);
   }
 
+  // ── Обратная задача: рыночная вероятность победы в матче → вероятность выиграть сет ──
+  // Рынок при счёте 1.75/1.95 уже УЧЁЛ текущий счёт в сете.
+  // Эта функция извлекает "что рынок думает о шансах в каждом сете" из котировок.
+  function impliedSetWinP(matchWinP, hSets, aSets, stw = 3) {
+    if (hSets >= stw || aSets >= stw) return matchWinP;
+    let lo = 0.01, hi = 0.99;
+    for (let i = 0; i < 60; i++) {
+      const mid = (lo + hi) / 2;
+      matchWinProb(hSets, aSets, mid, stw) < matchWinP ? lo = mid : hi = mid;
+    }
+    return (lo + hi) / 2;
+  }
+
+  // ── Обратная задача: из вероятности гандикапа → вероятность выиграть сет ──
+  // Рынок гандикапа содержит ДРУГУЮ информацию, чем рынок победителя.
+  // Triangulation обоих даёт более точную оценку реального setWinP.
+  function impliedSetWinPFromHdp(hdpProb, hSets, aSets, hdpLine, stw = 3) {
+    if (!isFinite(hdpProb) || hdpProb <= 0 || hdpProb >= 1) return null;
+    let lo = 0.01, hi = 0.99;
+    for (let i = 0; i < 60; i++) {
+      const mid = (lo + hi) / 2;
+      handicapDP(hSets, aSets, mid, hdpLine, stw)[0] < hdpProb ? lo = mid : hi = mid;
+    }
+    return (lo + hi) / 2;
+  }
+
   // ── P(гандикап по сетам) через DP ────────────────────────
   function handicapDP(hSets, aSets, setWinP, hdpLine, stw = 3) {
     const cache = {};
@@ -284,25 +310,21 @@ const Engine = (() => {
     const nonSteamConf = (archiveOK?1:0) + (domOK?1:0) + (nnOK?1:0);
     const confirmations = nonSteamConf + (steamOK?1:0);
 
-    // УМНЫЕ ДЕНЬГИ ПРОТИВ — требуем железных доказательств
-    // Если рынок (профессионалы) ставят ПРОТИВ нашего прогноза, это серьёзный сигнал
+    // УМНЫЕ ДЕНЬГИ ПРОТИВ — немедленный отказ (кроме 3+ независимых подтверждений)
     if (steamBAD) {
-      // HIGH только если 2+ независимых подтверждения И очень сильные показатели
-      if (evPct >= 10.0 && prob >= 0.74 && instab <= 0.16 && nonSteamConf >= 2) return 'high';
-      // MEDIUM если есть хотя бы 1 подтверждение И высокая математика
-      if (evPct >= 7.5 && prob >= 0.71 && instab <= 0.20 && nonSteamConf >= 1) return 'medium';
-      // Иначе — нет сигнала (умные деньги сильнее математики при конфликте)
+      if (evPct >= 8.0 && evPct <= 30 && prob >= 0.72 && instab <= 0.14 && nonSteamConf >= 3) return 'high';
+      if (evPct >= 6.0 && evPct <= 25 && prob >= 0.69 && instab <= 0.18 && nonSteamConf >= 2) return 'medium';
       return 'none';
     }
 
-    // HIGH: сильный EV + высокая вероятность + подтверждение
-    // Верхняя граница EV: >40% при живых котировках = ошибка модели (реальный край 5-20%)
-    if (evPct >= 9.0 && evPct <= 40 && prob >= 0.68 && instab <= 0.20 && confirmations >= 1) return 'high';
-    if (evPct >= 11.0 && evPct <= 40 && prob >= 0.67 && instab <= 0.22) return 'high';
+    // HIGH: реальный edge = математика + минимум 2 независимых источника
+    // EV 5-25% — реалистичный диапазон для живых ставок с информационным преимуществом
+    if (evPct >= 8.0 && evPct <= 30 && prob >= 0.70 && instab <= 0.18 && confirmations >= 2) return 'high';
+    if (evPct >= 10.0 && evPct <= 30 && prob >= 0.69 && instab <= 0.20 && confirmations >= 2) return 'high';
 
-    // MEDIUM: хорошая математика + подтверждение
-    if (evPct >= 6.0 && evPct <= 35 && prob >= 0.65 && instab <= 0.28 && confirmations >= 1) return 'medium';
-    if (evPct >= 7.5 && evPct <= 35 && prob >= 0.66 && instab <= 0.24) return 'medium';
+    // MEDIUM: есть что-то, но не уверены — нужно хотя бы 1 подтверждение
+    if (evPct >= 5.5 && evPct <= 25 && prob >= 0.67 && instab <= 0.25 && confirmations >= 1) return 'medium';
+    if (evPct >= 7.0 && evPct <= 25 && prob >= 0.66 && instab <= 0.22 && confirmations >= 1) return 'medium';
 
     return 'none';
   }
@@ -362,19 +384,55 @@ const Engine = (() => {
     const momentumAdj = smi(doneSets) + bppi(doneSets) + rlp(doneSets);
     const domData = pointDominance(doneSets); // доминирование по очкам
 
-    // Вес истории растёт с числом сыгранных партий
+    // ── 4. Многорыночный базовый ориентир ─────────────────
+    // Леон показывает три независимых рынка на каждый матч:
+    //   A) Победитель (w1/w2)   → говорит кто скорее выиграет матч
+    //   B) Гандикап по сетам    → говорит насколько убедительной будет победа
+    //   C) Тотал очков          → говорит ожидается ли длинный/короткий матч
+    // Каждый из них независимо оценивает setWinP. Среднее — точнее любого одного.
+    const mktProbs = noVigProb(w1Odds, w2Odds);
+
+    // A) setWinP из котировок победителя
+    const mktSwP_match = impliedSetWinP(mktProbs.home, homeSets, awaySets, stw);
+
+    // B) setWinP из котировок гандикапа (если доступен)
+    let mktSwP_hdp = null;
+    if (hdpHomeOdds && hdpAwayOdds && hdpLine !== null && hdpLine !== undefined) {
+      const mktHdpProbs = noVigProb(hdpHomeOdds, hdpAwayOdds);
+      mktSwP_hdp = impliedSetWinPFromHdp(mktHdpProbs.home, homeSets, awaySets, hdpLine, stw);
+    }
+
+    // C) setWinP из тотала: тотал ≈ ожидаемое количество очков
+    // Длинный матч (5 сетов) = игроки равны ≈ setWinP ≈ 0.5
+    // Короткий матч (3 сета) = явный фаворит ≈ setWinP далеко от 0.5
+    let mktSwP_total = null;
+    if (totalOverOdds && totalUnderOdds && totalLine) {
+      const mktTotProbs = noVigProb(totalOverOdds, totalUnderOdds);
+      // over > 50% → матч будет длинным → игроки ближе к равному → setWinP ближе к 0.5
+      // Нормализация: P(long match | setWinP=p) через expectedMatchPts
+      // Простая оценка: смещение к 0.5 пропорционально P(over)
+      const longBias = (mktTotProbs.home - 0.5) * 0.12; // осторожная оценка
+      mktSwP_total = Math.max(0.1, Math.min(0.9, 0.5 - longBias * (mktSwP_match > 0.5 ? 1 : -1)));
+    }
+
+    // Взвешенное среднее по доступным рынкам
+    let swpSum = mktSwP_match, swpW = 1.0;
+    if (mktSwP_hdp !== null && isFinite(mktSwP_hdp)) { swpSum += mktSwP_hdp * 1.2; swpW += 1.2; }
+    if (mktSwP_total !== null)                        { swpSum += mktSwP_total * 0.5; swpW += 0.5; }
+    const mktSetWinP = swpSum / swpW;
+
+    // Наша модель: моментум из СЫГРАННЫХ сетов (не текущего) + история
     const histWeight = Math.min(0.45, doneSets.length * 0.15);
-    const setWinFinal = Math.max(0.05, Math.min(0.95,
+    const setWinRaw2 = Math.max(0.05, Math.min(0.95,
       (1 - histWeight) * setWinRaw + histWeight * (avgSetWin + momentumAdj)
     ));
+    // Максимальное отклонение от рыночного консенсуса ±8pp
+    const setWinFinal = Math.max(mktSetWinP - 0.08, Math.min(mktSetWinP + 0.08, setWinRaw2));
 
-    // ── 4. Вероятность победы в матче ─────────────────────
     const matchModel = matchWinProb(homeSets, awaySets, setWinFinal, stw);
-    const mktProbs   = noVigProb(w1Odds, w2Odds);
 
-    // Финальная вероятность: блендинг модели и рынка
-    // Рынок знает многое — даём ему 45-50% веса, модели 50-55%
-    const modelWeight = Math.min(0.58, 0.48 + doneSets.length * 0.05);
+    // Финальная вероятность: преимущественно рынок, корректировка от внешних факторов
+    const modelWeight = Math.min(0.40, 0.25 + doneSets.length * 0.05);
     let trueHome = Math.max(0.05, Math.min(0.95,
       modelWeight * matchModel + (1 - modelWeight) * mktProbs.home
     ));
@@ -430,10 +488,11 @@ const Engine = (() => {
       }
     }
 
-    // ── Ограничение: модель не может уходить более чем на 17pp от рынка ──────
-    // Рынок (Леон) видит реальные ставки профессионалов — это ценная информация
+    // ── Ограничение: модель не может уходить более чем на 10pp от рынка ──────
+    // Рынок Леона обновляется в реальном времени по живым котировкам.
+    // Реальный edge — только от H2H/архива/стима, не от текущего счёта (рынок его видит).
     const mktHome = mktProbs.home;
-    const MAX_MARKET_DEVIATION = 0.17;
+    const MAX_MARKET_DEVIATION = 0.10;
     trueHome = Math.max(mktHome - MAX_MARKET_DEVIATION,
                  Math.min(mktHome + MAX_MARKET_DEVIATION, trueHome));
     trueHome = Math.max(0.08, Math.min(0.87, trueHome));
@@ -497,9 +556,10 @@ const Engine = (() => {
       if (canHomeWin || canAwayWin) {
         [hdpHomeProb, hdpAwayProb] = handicapDP(homeSets, awaySets, setWinFinal, hdpLine, stw);
 
-        // Ограничиваем отклонение от рыночной вероятности гандикапа (как match winner)
+        // Гандикап: жёсткое ограничение ±8pp от рыночной вероятности
+        // (мы уже использовали гандикап для mktSetWinP, поэтому отклонение минимально)
         const mktHdpBase = noVigProb(hdpHomeOdds, hdpAwayOdds);
-        const MAX_HDP_DEV = 0.13;
+        const MAX_HDP_DEV = 0.08;
         hdpHomeProb = Math.max(mktHdpBase.home - MAX_HDP_DEV,
                        Math.min(mktHdpBase.home + MAX_HDP_DEV, hdpHomeProb));
         hdpAwayProb = Math.max(mktHdpBase.away - MAX_HDP_DEV,
@@ -520,12 +580,13 @@ const Engine = (() => {
     function addPred(tag, market, label, prob, mktProb, odds, evPct, ph) {
       if (!odds || odds < 1.70) return;
       if (!isActionable(homeSets, awaySets)) return;
-      // Не прогнозируем в самом начале матча
-      if (setsPlayed === 0 && (currentHomePts + currentAwayPts) < 8) return;
-      // Требуем значимое расхождение с рынком (минимум 10pp)
-      if (mktProb !== null && mktProb !== undefined && Math.abs(prob - mktProb) < 0.10) return;
-      // Ограничение реалистичности: EV >50% = ошибка модели, а не реальное преимущество
-      if (evPct > 50) return;
+      // HIGH сигналы только после хотя бы 1 завершённого сета
+      // (до этого — нет живых данных сверх того, что видит рынок)
+      if (doneSets.length === 0 && (currentHomePts + currentAwayPts) < 12) return;
+      // Требуем расхождение с рынком минимум 8pp
+      if (mktProb !== null && mktProb !== undefined && Math.abs(prob - mktProb) < 0.08) return;
+      // Реалистичный потолок EV: живые рынки не дают >40% edge
+      if (evPct > 40) return;
       const sig = signalLevel(evPct, prob, instab, hist.agree, hist.strength, steam.agrees, domData.score, nnAgrees);
       if (sig === 'none') return;
       preds.push({
