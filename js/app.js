@@ -1660,6 +1660,28 @@ const App = (() => {
     const leonBtn   = m.leonUrl ? `<a class="btn-leon" href="${esc(m.leonUrl)}" target="_blank" rel="noopener">Открыть на Леоне →</a>` : '';
     const detailBtn = `<button class="btn-detail" onclick="App.openDetailView('${m.id}')">📋 Детали</button>`;
 
+    // ── "Горячий момент" ──
+    const hot = m.hotMoment || 'НЕЙТРАЛЬНЫЙ';
+    const hotCls  = hot === 'ГОРЯЧИЙ' ? 'hot-fire' : hot === 'ХОРОШИЙ' ? 'hot-warm'
+                  : hot === 'ХОЛОДНЫЙ' ? 'hot-cold' : 'hot-neutral';
+    const hotIcon = hot === 'ГОРЯЧИЙ' ? '🔥' : hot === 'ХОРОШИЙ' ? '✨'
+                  : hot === 'ХОЛОДНЫЙ' ? '❄️' : '〰️';
+    const hotBar = `<div class="hot-moment-row ${hotCls}">${hotIcon} Момент ставки: <strong>${hot}</strong></div>`;
+
+    // ── Прогноз партии ──
+    const setFavName = m.setFavHome ? m.homeTeam : m.awayTeam;
+    const setWinPct  = m.setFavProb || 50;
+    const setTrendArrow = m.setTrend === 'home' ? (m.setFavHome ? '↑' : '↓')
+                        : m.setTrend === 'away' ? (m.setFavHome ? '↓' : '↑') : '';
+    const setTrendCls   = m.setTrend === (m.setFavHome ? 'home' : 'away') ? 'set-trend-good' : 'set-trend-bad';
+    const setPredHtml = m.isLive && m.currentPts > 0 && Math.abs(setWinPct - 50) >= 8
+      ? `<div class="fa-section set-pred-row">
+           <span class="sp-label">🎯 Партия:</span>
+           <span class="sp-name">${esc(trunc(setFavName, 14))}</span>
+           <span class="sp-prob">${setWinPct}%</span>
+           ${setTrendArrow ? `<span class="sp-trend ${setTrendCls}">${setTrendArrow} темп</span>` : ''}
+         </div>` : '';
+
     // Final GO/NO-GO verdict
     const steamBad     = m.steamData?.agrees === false;
     const bestSig      = m.bestSignal;
@@ -1679,10 +1701,10 @@ const App = (() => {
       verdictCls  = 'vrd-warn';   verdictIcon = '⚡';
       verdictText = 'С ОСТОРОЖНОСТЬЮ';
       verdictSub  = 'Конфликт: рынок против модели';
-    } else if (bestSig === 'high' && okCount >= 2 && topEV >= 6) {
+    } else if (bestSig === 'high' && okCount >= 2 && topEV >= 6 && hot !== 'ХОЛОДНЫЙ') {
       verdictCls  = 'vrd-go';     verdictIcon = '✅';
       verdictText = 'СТАВИТЬ';
-      verdictSub  = `EV +${topEV.toFixed(1)}% · Уверенность ${topConf}%`;
+      verdictSub  = `EV +${topEV.toFixed(1)}% · ${hot === 'ГОРЯЧИЙ' ? '🔥 Горячий момент!' : `Уверенность ${topConf}%`}`;
     } else if (bestSig === 'medium' || (bestSig === 'high' && okCount < 2)) {
       verdictCls  = 'vrd-maybe';  verdictIcon = '📊';
       verdictText = 'ВОЗМОЖНО';
@@ -1700,7 +1722,9 @@ const App = (() => {
           <div class="vrd-title">${verdictText}</div>
           <div class="vrd-sub">${esc(verdictSub)}</div>
         </div>
+        ${hotBar}
       </div>
+      ${setPredHtml}
       <div class="fa-section fa-verdict">
         <div class="cp-conf ${confCls}">${confLabel} · ${okCount} из ${sources.length} источников</div>
         <div class="cp-favor">🏆 Фаворит: <strong>${esc(trunc(favTeam,18))}</strong> — ${favProb}%</div>
@@ -1754,6 +1778,8 @@ const App = (() => {
       : `<span class="card-status status-pre">СКОРО</span>`;
     const sigBadge = m.bestSignal === 'high'   ? `<span class="card-sig-badge sig-h">🎯</span>`
                    : m.bestSignal === 'medium'  ? `<span class="card-sig-badge sig-m">📊</span>` : '';
+    const hotBadge = m.hotMoment === 'ГОРЯЧИЙ' ? `<span class="card-hot-badge">🔥</span>`
+                   : m.hotMoment === 'ХОРОШИЙ'  ? `<span class="card-hot-badge hot-warm-badge">✨</span>` : '';
 
     return `
     <div class="match-card ${cardCls}" data-id="${m.id}">
@@ -1761,7 +1787,7 @@ const App = (() => {
       <div class="card-inner card-minimal">
         <div class="card-meta">
           <span class="card-tournament">${sportIcon} ${esc(m.tournament)}</span>
-          <div style="display:flex;gap:4px;align-items:center">${sigBadge}${statusBadge}</div>
+          <div style="display:flex;gap:4px;align-items:center">${hotBadge}${sigBadge}${statusBadge}</div>
         </div>
         <div class="scoreboard">
           <div class="sb-player home">

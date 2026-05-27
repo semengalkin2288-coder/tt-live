@@ -473,8 +473,13 @@ const Engine = (() => {
         setWinFinal, homeSets, awaySets, stw
       );
       const diff = expPts - totalLine;
-      // Логистическая кривая, чуть более агрессивная чем раньше
-      totalOverProb = Math.max(0.08, Math.min(0.92, 0.5 + diff * 0.036));
+      // Мягкая логистическая кривая — меньше экстремальных значений
+      let rawTotalProb = Math.max(0.10, Math.min(0.90, 0.5 + diff * 0.024));
+      // Ограничиваем отклонение от рынка (как match winner)
+      const mktTotalBase = noVigProb(totalOverOdds, totalUnderOdds);
+      const MAX_TOT_DEV = 0.14;
+      totalOverProb = Math.max(mktTotalBase.home - MAX_TOT_DEV,
+                        Math.min(mktTotalBase.home + MAX_TOT_DEV, rawTotalProb));
     }
 
     // ── 6. Гандикап по сетам ─────────────────────────────
@@ -601,6 +606,32 @@ const Engine = (() => {
     const leonMargin = (w1Odds && w2Odds)
       ? ((1/w1Odds + 1/w2Odds - 1) * 100).toFixed(1) : null;
 
+    // ── "Горячий момент" — насколько сейчас идеальное время для ставки ────────
+    // Факторы: steam согласен + домінирование + momentum + нет нестабильности
+    let hotScore = 0;
+    if (steam.agrees === true  && steam.strength > 0.2) hotScore += 3;
+    if (steam.agrees === false) hotScore -= 4;
+    if (Math.abs(domData.score) >= 0.4) hotScore += (domData.score > 0) === (trueHome > 0.5) ? 2 : -2;
+    if (momentumAdj > 5)  hotScore += 2;
+    if (momentumAdj < -5) hotScore -= 2;
+    if (instab < 0.15) hotScore += 1;
+    if (instab > 0.35) hotScore -= 2;
+    if (setsPlayed >= 2) hotScore += 1;
+    if (hist.agree === true  && hist.strength > 0.2) hotScore += 1;
+    if (hist.agree === false) hotScore -= 1;
+    // -10..+10 → нормализуем в строку
+    const hotMoment = hotScore >= 5 ? 'ГОРЯЧИЙ'
+                    : hotScore >= 2 ? 'ХОРОШИЙ'
+                    : hotScore <= -3 ? 'ХОЛОДНЫЙ'
+                    : 'НЕЙТРАЛЬНЫЙ';
+
+    // ── Прогноз текущей партии ────────────────────────────────
+    const setFavHome = setWinRaw > 0.5;
+    const setFavProb = Math.round(Math.max(setWinRaw, 1 - setWinRaw) * 100);
+    const setTrend = scoreData
+      ? (scoreData.homeVel > scoreData.awayVel ? 'home' : scoreData.awayVel > scoreData.homeVel ? 'away' : 'equal')
+      : null;
+
     return {
       ...event,
       predictions: preds, bestSignal: bestSig, topEV, topConf,
@@ -618,6 +649,8 @@ const Engine = (() => {
       steamData:   { ...steam, drift: oddsMovement },
       scoreDistrib,
       nnProb,  nnAgrees,
+      hotMoment, hotScore,
+      setFavHome, setFavProb, setTrend,
       _scoreVel:   scoreData ? { home: scoreData.homeVel, away: scoreData.awayVel, run: scoreData.recentRun } : null,
       _eloData:    history?.elo || null,
       _instab: +instab.toFixed(2),

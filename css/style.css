@@ -1484,11 +1484,31 @@ header {
 /* FULL ANALYSIS PANEL (inside cpred)                     */
 /* ====================================================== */
 
+/* Hot moment row inside verdict */
+.hot-moment-row { font-size: 0.72rem; margin-top: 4px; padding: 2px 6px; border-radius: 4px; display: inline-block; }
+.hot-fire   { background: rgba(239,68,68,.15); color: #fca5a5; }
+.hot-warm   { background: rgba(251,191,36,.12); color: #fde68a; }
+.hot-cold   { background: rgba(96,165,250,.12); color: #93c5fd; }
+.hot-neutral{ color: #6b7280; }
+
+/* Set prediction row */
+.set-pred-row { display: flex; align-items: center; gap: 6px; padding: 5px 12px; }
+.sp-label { color: #9ca3af; font-size: .75rem; }
+.sp-name  { font-weight: 600; color: #e5e7eb; }
+.sp-prob  { color: #4ade80; font-weight: 700; }
+.set-trend-good { color: #4ade80; font-size: .75rem; }
+.set-trend-bad  { color: #f87171; font-size: .75rem; }
+
+/* Hot badge on card */
+.card-hot-badge { font-size: .85rem; line-height: 1; }
+.hot-warm-badge { opacity: .85; }
+
 .full-analysis { font-size: 0.82rem; }
 
 /* Verdict banner */
 .fa-verdict-main {
   display: flex; align-items: center; gap: 10px;
+  flex-wrap: wrap;
   padding: 10px 14px; border-radius: 8px 8px 0 0;
   font-weight: 700; border-bottom: 2px solid transparent;
 }
