@@ -276,10 +276,24 @@ const Engine = (() => {
 
     const archiveOK = histAgree  === true && histStrength >= 0.22;
     const steamOK   = steamAgrees === true;
+    const steamBAD  = steamAgrees === false;
     const domOK     = Math.abs(domScore || 0) >= 0.3;
     const nnOK      = nnAgrees   === true;
 
-    const confirmations = (archiveOK?1:0) + (steamOK?1:0) + (domOK?1:0) + (nnOK?1:0);
+    // Non-steam confirmations (objective signals that don't depend on market movement)
+    const nonSteamConf = (archiveOK?1:0) + (domOK?1:0) + (nnOK?1:0);
+    const confirmations = nonSteamConf + (steamOK?1:0);
+
+    // УМНЫЕ ДЕНЬГИ ПРОТИВ — требуем железных доказательств
+    // Если рынок (профессионалы) ставят ПРОТИВ нашего прогноза, это серьёзный сигнал
+    if (steamBAD) {
+      // HIGH только если 2+ независимых подтверждения И очень сильные показатели
+      if (evPct >= 10.0 && prob >= 0.74 && instab <= 0.16 && nonSteamConf >= 2) return 'high';
+      // MEDIUM если есть хотя бы 1 подтверждение И высокая математика
+      if (evPct >= 7.5 && prob >= 0.71 && instab <= 0.20 && nonSteamConf >= 1) return 'medium';
+      // Иначе — нет сигнала (умные деньги сильнее математики при конфликте)
+      return 'none';
+    }
 
     // HIGH: сильный EV + высокая вероятность + хотя бы 1 подтверждение
     if (evPct >= 6.5 && prob >= 0.65 && instab <= 0.22 && confirmations >= 1) return 'high';
@@ -292,15 +306,18 @@ const Engine = (() => {
     return 'none';
   }
 
-  function confidence(prob, evPct, setsPlayed, instab) {
+  function confidence(prob, evPct, setsPlayed, instab, steamAgrees) {
     let s = Math.round(prob * 100);
     if (evPct > 9)      s = Math.min(s + 8, 95);
     else if (evPct > 5) s = Math.min(s + 5, 93);
     else if (evPct > 2) s = Math.min(s + 2, 90);
     else if (evPct < 0) s = Math.max(s - 8, 20);
     if (setsPlayed >= 2) s = Math.min(s + 4, 95);
-    // Снижаем уверенность при нестабильности
     s = Math.round(s * (1 - instab * 0.3));
+    // Умные деньги против = -20% уверенности (профи видят что-то другое)
+    if (steamAgrees === false) s = Math.round(s * 0.80);
+    // Умные деньги за = +5% бонус
+    if (steamAgrees === true)  s = Math.min(95, Math.round(s * 1.05));
     return Math.max(20, Math.min(95, s));
   }
 
@@ -573,7 +590,7 @@ const Engine = (() => {
     const bestSig    = preds[0]?.signal || 'none';
     const topEV      = preds[0]?.evPct  || 0;
     const topProb    = preds[0]?.prob    || 0.5;
-    const topConf    = confidence(topProb, topEV, setsPlayed, instab);
+    const topConf    = confidence(topProb, topEV, setsPlayed, instab, steam.agrees);
     const scoreDistrib = matchScoreDistrib(homeSets, awaySets, setWinFinal, stw);
 
     const leonMargin = (w1Odds && w2Odds)

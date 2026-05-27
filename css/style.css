@@ -1486,6 +1486,21 @@ header {
 
 .full-analysis { font-size: 0.82rem; }
 
+/* Verdict banner */
+.fa-verdict-main {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border-radius: 8px 8px 0 0;
+  font-weight: 700; border-bottom: 2px solid transparent;
+}
+.vrd-icon { font-size: 1.4rem; line-height: 1; }
+.vrd-title { font-size: 1rem; letter-spacing: .04em; }
+.vrd-sub { font-size: 0.72rem; font-weight: 400; opacity: .85; margin-top: 1px; }
+.vrd-go    { background: #0e2e1a; border-color: #22c55e; color: #4ade80; }
+.vrd-no    { background: #2e0e0e; border-color: #ef4444; color: #f87171; }
+.vrd-warn  { background: #2e1e00; border-color: #f59e0b; color: #fcd34d; }
+.vrd-maybe { background: #1a1a2e; border-color: #818cf8; color: #a5b4fc; }
+.vrd-wait  { background: #1a1a1a; border-color: #4b5563; color: #9ca3af; }
+
 .fa-section {
   padding: 8px 12px;
   border-top: 1px solid var(--border);

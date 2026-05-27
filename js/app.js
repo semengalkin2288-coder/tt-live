@@ -1660,7 +1660,47 @@ const App = (() => {
     const leonBtn   = m.leonUrl ? `<a class="btn-leon" href="${esc(m.leonUrl)}" target="_blank" rel="noopener">Открыть на Леоне →</a>` : '';
     const detailBtn = `<button class="btn-detail" onclick="App.openDetailView('${m.id}')">📋 Детали</button>`;
 
+    // Final GO/NO-GO verdict
+    const steamBad     = m.steamData?.agrees === false;
+    const bestSig      = m.bestSignal;
+    const topEV        = m.topEV || 0;
+    const topConf      = m.topConf || 0;
+    const hasPred      = m.predictions.length > 0;
+    let verdictCls, verdictIcon, verdictText, verdictSub;
+    if (!hasPred || bestSig === 'none' || bestSig === undefined) {
+      verdictCls  = 'vrd-wait';   verdictIcon = '⏳';
+      verdictText = 'ЖДЁМ ДАННЫХ';
+      verdictSub  = 'Недостаточно сигналов для ставки';
+    } else if (steamBad && okCount < 2) {
+      verdictCls  = 'vrd-no';     verdictIcon = '🚫';
+      verdictText = 'НЕ СТАВИТЬ';
+      verdictSub  = 'Умные деньги против прогноза — пропускаем';
+    } else if (steamBad) {
+      verdictCls  = 'vrd-warn';   verdictIcon = '⚡';
+      verdictText = 'С ОСТОРОЖНОСТЬЮ';
+      verdictSub  = 'Конфликт: рынок против модели';
+    } else if (bestSig === 'high' && okCount >= 2 && topEV >= 6) {
+      verdictCls  = 'vrd-go';     verdictIcon = '✅';
+      verdictText = 'СТАВИТЬ';
+      verdictSub  = `EV +${topEV.toFixed(1)}% · Уверенность ${topConf}%`;
+    } else if (bestSig === 'medium' || (bestSig === 'high' && okCount < 2)) {
+      verdictCls  = 'vrd-maybe';  verdictIcon = '📊';
+      verdictText = 'ВОЗМОЖНО';
+      verdictSub  = 'Не все источники согласны — риск есть';
+    } else {
+      verdictCls  = 'vrd-wait';   verdictIcon = '⏳';
+      verdictText = 'ЖДЁМ';
+      verdictSub  = 'Матч развивается — сигнал слабый';
+    }
+
     return `<div class="full-analysis">
+      <div class="fa-verdict-main ${verdictCls}">
+        <span class="vrd-icon">${verdictIcon}</span>
+        <div class="vrd-body">
+          <div class="vrd-title">${verdictText}</div>
+          <div class="vrd-sub">${esc(verdictSub)}</div>
+        </div>
+      </div>
       <div class="fa-section fa-verdict">
         <div class="cp-conf ${confCls}">${confLabel} · ${okCount} из ${sources.length} источников</div>
         <div class="cp-favor">🏆 Фаворит: <strong>${esc(trunc(favTeam,18))}</strong> — ${favProb}%</div>
