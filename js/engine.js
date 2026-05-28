@@ -317,14 +317,14 @@ const Engine = (() => {
       return 'none';
     }
 
-    // HIGH: реальный edge = математика + минимум 2 независимых источника
-    // EV 5-25% — реалистичный диапазон для живых ставок с информационным преимуществом
-    if (evPct >= 8.0 && evPct <= 30 && prob >= 0.70 && instab <= 0.18 && confirmations >= 2) return 'high';
-    if (evPct >= 10.0 && evPct <= 30 && prob >= 0.69 && instab <= 0.20 && confirmations >= 2) return 'high';
+    // HIGH: сильный EV + вероятность + хотя бы 1 подтверждение
+    // Верхний предел EV 35% — выше = ошибка модели в живых котировках
+    if (evPct >= 7.0 && evPct <= 35 && prob >= 0.68 && instab <= 0.20 && confirmations >= 1) return 'high';
+    if (evPct >= 9.0 && evPct <= 35 && prob >= 0.67 && instab <= 0.22) return 'high';
 
-    // MEDIUM: есть что-то, но не уверены — нужно хотя бы 1 подтверждение
-    if (evPct >= 5.5 && evPct <= 25 && prob >= 0.67 && instab <= 0.25 && confirmations >= 1) return 'medium';
-    if (evPct >= 7.0 && evPct <= 25 && prob >= 0.66 && instab <= 0.22 && confirmations >= 1) return 'medium';
+    // MEDIUM: достаточная математика + подтверждение или сильная математика сама по себе
+    if (evPct >= 5.0 && evPct <= 28 && prob >= 0.65 && instab <= 0.27 && confirmations >= 1) return 'medium';
+    if (evPct >= 6.5 && evPct <= 28 && prob >= 0.64 && instab <= 0.24) return 'medium';
 
     return 'none';
   }
@@ -421,17 +421,16 @@ const Engine = (() => {
     const setWinRaw2 = Math.max(0.05, Math.min(0.95,
       (1 - histWeight) * setWinRaw + histWeight * (avgSetWin + momentumAdj)
     ));
-    const setWinFinal = Math.max(mktSetWinP - 0.08, Math.min(mktSetWinP + 0.08, setWinRaw2));
+    const setWinFinal = Math.max(mktSetWinP - 0.12, Math.min(mktSetWinP + 0.12, setWinRaw2));
 
-    // ════════════════════════════════════════════════════════════
-    // КЛЮЧЕВОЙ ПРИНЦИП: trueHome строится ТОЛЬКО из внешних данных
-    // Рынок Леона уже учёл текущий счёт — мы не можем его "перехитрить" счётом.
-    // Единственный реальный edge: H2H / ELO / форма / умные деньги
-    // противоречат тому, что рынок закладывает в котировки.
-    // ════════════════════════════════════════════════════════════
+    // Модельная вероятность победы в матче (учитывает счёт сетов + setWinFinal)
+    const matchModel = matchWinProb(homeSets, awaySets, setWinFinal, stw);
 
-    // Базовая линия = рыночная вероятность (живая, учитывает всё публичное)
-    let trueHome = mktProbs.home;
+    // Начальная вероятность: взвешенный блендинг модели и рынка.
+    // Рынок знает счёт, но наша модель кодирует динамику сетов + историю.
+    // С ростом числа сыгранных сетов — больше доверяем своей модели.
+    const modelWeight = Math.min(0.48, 0.32 + doneSets.length * 0.06);
+    let trueHome = modelWeight * matchModel + (1 - modelWeight) * mktProbs.home;
 
     // ── Архив (H2H + форма) ──────────────────────────────
     // Рынок не всегда полностью учитывает долгосрочные H2H-тенденции
@@ -485,10 +484,10 @@ const Engine = (() => {
       }
     }
 
-    // ── Жёсткое ограничение отклонения от рынка ───────────
-    // Максимум ±10pp: реальный информационный edge не бывает больше
+    // Ограничение отклонения от рынка: ±14pp
+    // Рынок почти всегда прав, но 10-14pp реального edge — возможно при H2H/ELO преимуществе
     const mktHome = mktProbs.home;
-    const MAX_MARKET_DEVIATION = 0.10;
+    const MAX_MARKET_DEVIATION = 0.14;
     trueHome = Math.max(mktHome - MAX_MARKET_DEVIATION,
                  Math.min(mktHome + MAX_MARKET_DEVIATION, trueHome));
     trueHome = Math.max(0.08, Math.min(0.87, trueHome));
