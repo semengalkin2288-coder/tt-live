@@ -140,7 +140,7 @@ const Engine = (() => {
         return (h - a) + hdpLine > 0 ? [1, 0] : [0, 1];
       }
       const k = `${h}:${a}`;
-      if (cache[k]) return cache[k];
+      if (cache[k] !== undefined) return cache[k];
       const hw = dp(h+1, a), aw = dp(h, a+1);
       return (cache[k] = [
         setWinP*hw[0] + (1-setWinP)*aw[0],
@@ -317,14 +317,13 @@ const Engine = (() => {
       return 'none';
     }
 
-    // HIGH: сильный EV + вероятность + хотя бы 1 подтверждение
-    // Верхний предел EV 35% — выше = ошибка модели в живых котировках
-    if (evPct >= 7.0 && evPct <= 35 && prob >= 0.68 && instab <= 0.20 && confirmations >= 1) return 'high';
-    if (evPct >= 9.0 && evPct <= 35 && prob >= 0.67 && instab <= 0.22) return 'high';
+    // HIGH: сильный EV + вероятность + подтверждение
+    if (evPct >= 6.0 && evPct <= 35 && prob >= 0.67 && instab <= 0.22 && confirmations >= 1) return 'high';
+    if (evPct >= 8.5 && evPct <= 35 && prob >= 0.66 && instab <= 0.24) return 'high';
 
-    // MEDIUM: достаточная математика + подтверждение или сильная математика сама по себе
-    if (evPct >= 5.0 && evPct <= 28 && prob >= 0.65 && instab <= 0.27 && confirmations >= 1) return 'medium';
-    if (evPct >= 6.5 && evPct <= 28 && prob >= 0.64 && instab <= 0.24) return 'medium';
+    // MEDIUM: разумный EV + подтверждение ИЛИ хороший EV без подтверждения
+    if (evPct >= 3.5 && evPct <= 28 && prob >= 0.64 && instab <= 0.28 && confirmations >= 1) return 'medium';
+    if (evPct >= 5.0 && evPct <= 28 && prob >= 0.63 && instab <= 0.25) return 'medium';
 
     return 'none';
   }
@@ -535,10 +534,9 @@ const Engine = (() => {
       if (canHomeWin || canAwayWin) {
         [hdpHomeProb, hdpAwayProb] = handicapDP(homeSets, awaySets, setWinFinal, hdpLine, stw);
 
-        // Гандикап: жёсткое ограничение ±8pp от рыночной вероятности
-        // (мы уже использовали гандикап для mktSetWinP, поэтому отклонение минимально)
+        // Гандикап: ограничение ±11pp от рыночной вероятности
         const mktHdpBase = noVigProb(hdpHomeOdds, hdpAwayOdds);
-        const MAX_HDP_DEV = 0.08;
+        const MAX_HDP_DEV = 0.11;
         hdpHomeProb = Math.max(mktHdpBase.home - MAX_HDP_DEV,
                        Math.min(mktHdpBase.home + MAX_HDP_DEV, hdpHomeProb));
         hdpAwayProb = Math.max(mktHdpBase.away - MAX_HDP_DEV,
@@ -559,11 +557,10 @@ const Engine = (() => {
     function addPred(tag, market, label, prob, mktProb, odds, evPct, ph) {
       if (!odds || odds < 1.70) return;
       if (!isActionable(homeSets, awaySets)) return;
-      // HIGH сигналы только после хотя бы 1 завершённого сета
-      // (до этого — нет живых данных сверх того, что видит рынок)
-      if (doneSets.length === 0 && (currentHomePts + currentAwayPts) < 12) return;
-      // Требуем расхождение с рынком минимум 8pp
-      if (mktProb !== null && mktProb !== undefined && Math.abs(prob - mktProb) < 0.08) return;
+      // Не прогнозируем в самом начале матча (нет данных)
+      if (doneSets.length === 0 && (currentHomePts + currentAwayPts) < 6) return;
+      // Требуем расхождение с рынком минимум 5pp
+      if (mktProb !== null && mktProb !== undefined && Math.abs(prob - mktProb) < 0.05) return;
       // Реалистичный потолок EV: живые рынки не дают >40% edge
       if (evPct > 40) return;
       const sig = signalLevel(evPct, prob, instab, hist.agree, hist.strength, steam.agrees, domData.score, nnAgrees);
@@ -654,11 +651,12 @@ const Engine = (() => {
 
     preds.sort((a, b) => b.evPct - a.evPct);
 
-    // Match winner + handicap are correlated (same underlying prob) — keep only the better EV one
+    // Match winner + handicap коррелированы — оставляем только лучший из двух + тоталы
     if (preds.some(p => p.tag === 'match') && preds.some(p => p.tag === 'handicap')) {
-      const totals = preds.filter(p => p.tag === 'total');
-      const best   = preds.find(p => p.tag === 'match' || p.tag === 'handicap');
-      preds = best ? [best, ...totals] : totals;
+      const others = preds.filter(p => p.tag !== 'match' && p.tag !== 'handicap');
+      const best   = preds.filter(p => p.tag === 'match' || p.tag === 'handicap')
+                          .sort((a, b) => b.evPct - a.evPct)[0];
+      preds = best ? [best, ...others] : others;
     }
 
     const bestSig    = preds[0]?.signal || 'none';

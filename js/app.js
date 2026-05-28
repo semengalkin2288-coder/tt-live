@@ -505,7 +505,7 @@ const App = (() => {
     _checkNotifications(analyzed);
     const liveCount  = analyzed.filter(m => m.isLive).length;
     const valueCount = analyzed.filter(m =>
-      m.predictions.some(p => p.signal === 'high' || p.signal === 'medium')
+      (m.predictions || []).some(p => p.signal === 'high' || p.signal === 'medium')
     ).length;
     document.getElementById('count-live').textContent  = liveCount;
     document.getElementById('count-value').textContent = valueCount;
