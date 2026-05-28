@@ -300,10 +300,10 @@ const Engine = (() => {
   function signalLevel(evPct, prob, instab, histAgree, histStrength, steamAgrees, domScore, nnAgrees) {
     if (instab > 0.48) return 'none';
 
-    const archiveOK = histAgree  === true && histStrength >= 0.22;
+    const archiveOK = histAgree  === true && histStrength >= 0.18; // понижен порог — DB часто скудная
     const steamOK   = steamAgrees === true;
     const steamBAD  = steamAgrees === false;
-    const domOK     = Math.abs(domScore || 0) >= 0.3;
+    const domOK     = Math.abs(domScore || 0) >= 0.25; // 2+ сыгранных сета с явным превосходством
     const nnOK      = nnAgrees   === true;
 
     // Non-steam confirmations (objective signals that don't depend on market movement)
@@ -317,13 +317,17 @@ const Engine = (() => {
       return 'none';
     }
 
-    // HIGH: сильный EV + вероятность + подтверждение
-    if (evPct >= 6.0 && evPct <= 35 && prob >= 0.67 && instab <= 0.22 && confirmations >= 1) return 'high';
-    if (evPct >= 8.5 && evPct <= 35 && prob >= 0.66 && instab <= 0.24) return 'high';
+    // Без независимого подтверждения — нет сигнала.
+    // Счёт в партии рынок уже видит и учитывает в котировках.
+    // Наш edge — только когда ВНЕШНИЕ данные (архив/стим/NN/доминирование)
+    // противоречат тому, что говорит рынок.
+    if (confirmations === 0) return 'none';
 
-    // MEDIUM: разумный EV + подтверждение ИЛИ хороший EV без подтверждения
-    if (evPct >= 3.5 && evPct <= 28 && prob >= 0.64 && instab <= 0.28 && confirmations >= 1) return 'medium';
-    if (evPct >= 5.0 && evPct <= 28 && prob >= 0.63 && instab <= 0.25) return 'medium';
+    // HIGH: сильная математика + минимум 1 независимый источник
+    if (evPct >= 6.0 && evPct <= 35 && prob >= 0.67 && instab <= 0.22) return 'high';
+
+    // MEDIUM: приемлемая математика + минимум 1 независимый источник
+    if (evPct >= 3.5 && evPct <= 28 && prob >= 0.64 && instab <= 0.28) return 'medium';
 
     return 'none';
   }
