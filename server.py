@@ -1251,23 +1251,28 @@ def _odds_football(markets):
         # ── Totals (all lines) ────────────────────────────────
         if ('тотал' in mn or 'total' in mn) and len(runners) == 2:
             if any(x in mn for x in _skip_kw): continue
+            # Skip individual team/player totals — we want match totals only
+            is_team_tot = any(x in mn for x in ('команд', 'individual', 'индивидуальн',
+                                                  'player', 'игрок', '1-го', '2-го',
+                                                  'хозяев', 'гостей', 'home team', 'away team'))
             ov = un = None
             for r in runners:
                 n, p = r.get('name', ''), r.get('price'); nl = n.lower()
                 if ('больше' in nl or 'over' in nl) and p: ov = (p, n)
                 elif ('меньше' in nl or 'under' in nl) and p: un = (p, n)
             if ov and un:
-                ml = _re.search(r'[\d.]+', ov[1])
+                # Extract line from runner name (e.g. "Больше 2.5" → 2.5)
+                ml = _re.search(r'[\d]+\.?[\d]*', ov[1])
                 if ml:
                     line = float(ml.group())
-                    bal = abs(ov[0] - 2.0) + abs(un[0] - 2.0)
                     if is_h1:
                         if h1_tot_line is None:
                             h1_tot_over, h1_tot_under, h1_tot_line = ov[0], un[0], line
-                    else:
+                    elif not is_team_tot:
                         all_totals[line] = (ov[0], un[0])
-                        if bal < best_bal:
-                            best_bal = bal; tot_line = line; tot_over = ov[0]; tot_under = un[0]
+                        # Pick main total: prefer line closest to 2.5 (standard football total)
+                        if tot_line is None or abs(line - 2.5) < abs(tot_line - 2.5):
+                            tot_line = line; tot_over = ov[0]; tot_under = un[0]
 
         # ── Handicap (all lines) ──────────────────────────────
         if ('фора' in mn or 'гандикап' in mn or 'handicap' in mn) and len(runners) == 2:
