@@ -1679,8 +1679,8 @@ const App = (() => {
     }
 
     // Football: cross-market Poisson consistency is always a baseline source
-    if (isFootball && preds.length > 0) {
-      const topPredRef = preds[0]; // already sorted by EV
+    if (isFootball && m.predictions.length > 0) {
+      const topPredRef = m.predictions[0]; // already sorted by EV
       sources.push({ ok: topPredRef.evPct > 0, txt: `Пуассон-модель: кросс-рынок EV ${topPredRef.evPct > 0 ? '+' : ''}${topPredRef.evPct.toFixed(1)}%` });
     }
 

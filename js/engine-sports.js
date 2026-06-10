@@ -303,6 +303,23 @@ const SportsEngine = (() => {
     const vigParts = [1/w1Odds, wxOdds ? 1/wxOdds : 0, 1/w2Odds];
     const margin = ((vigParts.reduce((a,b)=>a+b,0)-1)*100).toFixed(1);
 
+    // Hot moment for UI verdict
+    let hotMoment = 'НЕЙТРАЛЬНЫЙ';
+    if (bestSig === 'high' && topEV >= 8) hotMoment = 'ГОРЯЧИЙ';
+    else if (bestSig === 'high' || (bestSig === 'medium' && topEV >= 5)) hotMoment = 'ХОРОШИЙ';
+    else if (bestSig === 'none') hotMoment = 'ХОЛОДНЫЙ';
+
+    // Score distribution for top 4 likely scorelines
+    const scoreDistrib = {};
+    if (isFootball) {
+      for (let i = 0; i <= 5; i++) {
+        for (let j = 0; j <= 5; j++) {
+          const p = pPMF(i, lh) * pPMF(j, la);
+          if (p >= 0.01) scoreDistrib[`${homeScore+i}:${awayScore+j}`] = +p.toFixed(3);
+        }
+      }
+    }
+
     return {
       ...event,
       predictions: preds, bestSignal: bestSig, topEV, topConf: Math.min(95, topConf),
@@ -313,6 +330,9 @@ const SportsEngine = (() => {
       momentumAdj:      +(scoreDiff * 1.5).toFixed(1),
       setWinHomeProb:   Math.round(model.p1 * 100),
       doneSets: [], currentPts: 0,
+      hotMoment, scoreDistrib,
+      setFavHome: model.p1 >= model.p2, setFavProb: Math.round(Math.max(model.p1, model.p2) * 100),
+      histAgree: null, steamData: null, domData: null, nnProb: null, nnAgrees: null,
       formOK, h2hOK, fbStats,
       _lh: +lh.toFixed(2), _la: +la.toFixed(2),
     };
