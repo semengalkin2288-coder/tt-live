@@ -112,17 +112,19 @@ const Stats = (() => {
 // ── App ───────────────────────────────────────────────────
 const App = (() => {
   const REFRESH_SEC = 25;
-  let currentSport   = 'tt';
+  let currentSport   = 'football';
   let analyzed       = [];
   let countdownVal   = REFRESH_SEC;
   let countdownTimer = null;
   let isLoading      = false;
   let highlightedId  = null;
-  const _historyCache  = {};   // { matchId: history_data }
-  const _aiCache       = {};   // { matchId: ai_result }
-  const _oddsHistory   = {};   // { matchId: { initial, current } }
-  const _scoreTracker  = {};   // { matchId: { prevHomePts, prevAwayPts, prevTs, homeVel, awayVel, recentRun } }
+  const _historyCache      = {};   // { matchId: history_data }       — TT player stats
+  const _footballStatsCache = {};  // { matchId: teamStats }           — football team stats
+  const _aiCache            = {};  // { matchId: ai_result }
+  const _oddsHistory        = {};  // { matchId: { initial, current } }
+  const _scoreTracker       = {};  // { matchId: { prevHomePts, ... } }
   let _histFetchPending = false;
+  let _fbStatsFetchPending = false;
   const _notifiedKeys = new Set();
   let _prevStatProfit = null;
   let _notifsEnabled  = false;
@@ -261,10 +263,13 @@ const App = (() => {
     try {
       const p = new URLSearchParams({
         p1: m.homeTeam, p2: m.awayTeam,
-        score: `${m.homeSets}:${m.awaySets}`,
+        score: `${m.homeScore ?? m.homeSets}:${m.awayScore ?? m.awaySets}`,
         homeProb: m.matchWinHomeProb,
         ev: (m.topEV || 0).toFixed(1),
-        w1: m.w1Odds || '', w2: m.w2Odds || '',
+        w1: m.w1Odds || '', wx: m.wxOdds || '', w2: m.w2Odds || '',
+        sport: currentSport,
+        period: m.periodLabel || '',
+        minute: m.minute || 0,
       });
       const res = await fetch(`/api/ai-analysis?${p}`, { cache: 'no-store' });
       _aiCache[matchId] = await res.json();
@@ -307,6 +312,25 @@ const App = (() => {
       } catch { /* network error — ignore */ }
     }));
     _histFetchPending = false;
+    if (changed) render();
+  }
+
+  // ── Football team stats background fetch ─────────────
+  async function fetchFootballStats(matches) {
+    if (_fbStatsFetchPending) return;
+    _fbStatsFetchPending = true;
+    const targets = matches.filter(m => m.isLive && m.sport === 'football' && !_footballStatsCache[m.id]);
+    let changed = false;
+    await Promise.allSettled(targets.slice(0, 12).map(async m => {
+      try {
+        const url = `/api/football-stats?home=${encodeURIComponent(m.homeTeam)}&away=${encodeURIComponent(m.awayTeam)}`;
+        const res = await fetch(url, { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data.error) { _footballStatsCache[m.id] = data; changed = true; }
+      } catch { /* ignore */ }
+    }));
+    _fbStatsFetchPending = false;
     if (changed) render();
   }
 
@@ -479,18 +503,24 @@ const App = (() => {
   // ── Shared data processing ────────────────────────────
   function _processData(data) {
     const bankroll = getBankroll();
-    if (currentSport === 'tt') {
+    // Track odds movement for TT and Football
+    if (currentSport === 'tt' || currentSport === 'football') {
       updateOddsHistory(data.events);
+    }
+    if (currentSport === 'tt') {
       updateScoreTracker(data.events);
     }
     analyzed = (data.events || []).map(e => {
       if (e.sport === 'football' || e.sport === 'hockey' || e.sport === 'tennis')
-        return SportsEngine.analyze(e, bankroll);
+        return SportsEngine.analyze(e, bankroll, _footballStatsCache[e.id] || null);
       return Engine.analyze(e, bankroll, _historyCache[e.id] || null, getOddsMovement(e.id), getScoreData(e.id));
     }).filter(Boolean);
     if (currentSport === 'tt') {
       fetchHistoryForMatches(analyzed);
       _updateDupeMap(analyzed);
+    }
+    if (currentSport === 'football') {
+      fetchFootballStats(analyzed);
     }
     const stats = Stats.processRefresh(analyzed, currentSport);
     updateStatsBar(stats);
@@ -1421,7 +1451,7 @@ const App = (() => {
 
     let list = analyzed.map(m => {
       if (m.sport === 'football' || m.sport === 'hockey' || m.sport === 'tennis')
-        return SportsEngine.analyze(m, bankroll);
+        return SportsEngine.analyze(m, bankroll, _footballStatsCache[m.id] || null);
       return Engine.analyze(m, bankroll, _historyCache[m.id] || null, getOddsMovement(m.id), getScoreData(m.id));
     }).filter(Boolean);
 
@@ -1524,10 +1554,49 @@ const App = (() => {
     </div>`;
   }
 
+  // ── Football team stats block ─────────────────────────
+  function footballStatsRowHtml(m) {
+    if (m.sport !== 'football') return '';
+    const fb = m.fbStats || _footballStatsCache[m.id];
+    if (!fb) {
+      return m.isLive
+        ? `<div class="hist-row hist-loading">⚽ Статистика команд: загружается с SofaScore...</div>`
+        : '';
+    }
+    const hs = fb.home, as_ = fb.away, h2h = fb.h2h;
+    const hasData = (hs && hs.matches >= 1) || (as_ && as_.matches >= 1);
+    if (!hasData) return `<div class="hist-row hist-neutral">⚽ Команды не найдены в SofaScore</div>`;
+
+    const formIcon = f => ({ W: '✅', D: '🟡', L: '❌' }[f] || '❓');
+    const teamRow = (name, st) => {
+      if (!st || st.matches < 1) return '';
+      const form = (st.form || []).slice(0, 5).map(formIcon).join('');
+      const wrCls = st.winRate >= 0.56 ? 'wr-high' : st.winRate <= 0.40 ? 'wr-low' : '';
+      return `<div class="pstat">
+        <span class="pstat-name">${esc(trunc(name, 15))}</span>
+        <span class="pstat-wr ${wrCls}">${(st.winRate*100).toFixed(0)}%</span>
+        <span class="pstat-form">${form}</span>
+        <span class="pstat-g" title="голы за/против">${st.avgFor}/${st.avgAgainst}</span>
+        <span class="pstat-m">${st.matches}м</span>
+      </div>`;
+    };
+    const h2hHtml = h2h && h2h.total >= 1
+      ? `<div class="h2h-row">H2H: ${h2h.homeWins}–${h2h.awayWins} (${h2h.total} встреч) [${h2h.source || 'SofaScore'}]</div>` : '';
+    const cls = m.formOK === true ? 'hist-ok' : m.formOK === false ? 'hist-warn' : 'hist-neutral';
+    const verdict = m.formOK === true  ? '✅ Форма команд подтверждает прогноз'
+                  : m.formOK === false ? '⚠️ Форма команд противоречит прогнозу'
+                  : '⚽ Статистика команд (SofaScore)';
+    return `<div class="hist-block ${cls}">
+      <div class="hist-header">${verdict}</div>
+      ${teamRow(m.homeTeam, hs)}${teamRow(m.awayTeam, as_)}${h2hHtml}
+    </div>`;
+  }
+
   // ── Full analysis panel (opened by button) ───────────
   function _fullAnalysisHtml(m) {
     const sport = m.sport || 'tt';
     const isTT  = sport === 'tt';
+    const isFootball = sport === 'football';
     const isGoalSport = sport === 'football' || sport === 'hockey';
 
     // Sources / confidence block (reuse existing logic)
@@ -1564,27 +1633,55 @@ const App = (() => {
       sources.push({ ok: ((m.momentumAdj||0) > 0) === favHome, txt: `Моментум: ${trunc(momFav,12)} набирает ход` });
     }
 
-    // ── Источник 4: архив, умные деньги, доминирование ──
-    if (m.histAgree === true)  sources.push({ ok: true,  txt: `Архив: ${trunc(favTeam,13)} побеждает чаще` });
-    else if (m.histAgree === false) sources.push({ ok: false, txt: 'Архив противоречит прогнозу' });
+    // ── Источник 4: архив/форма, умные деньги, доминирование ──
+    if (isFootball) {
+      // Football: form-based confirmation from SofaScore
+      if (m.formOK === true) {
+        const fb = m.fbStats || _footballStatsCache[m.id];
+        const hs = fb?.home, as_ = fb?.away;
+        const form_h = hs ? `${(hs.winRate*100).toFixed(0)}% ${(hs.form||[]).slice(0,3).join('')}` : '';
+        const form_a = as_ ? `${(as_.winRate*100).toFixed(0)}% ${(as_.form||[]).slice(0,3).join('')}` : '';
+        sources.push({ ok: true, txt: `Форма: ${trunc(m.homeTeam,10)} ${form_h} vs ${trunc(m.awayTeam,10)} ${form_a}` });
+      } else if (m.formOK === false) {
+        sources.push({ ok: false, txt: 'Форма команд противоречит прогнозу модели' });
+      }
+      if (m.h2hOK === true) {
+        const fb = m.fbStats || _footballStatsCache[m.id];
+        const h2h = fb?.h2h;
+        if (h2h) sources.push({ ok: true, txt: `H2H: ${h2h.homeWins}–${h2h.awayWins} в пользу ${trunc(favHome ? m.homeTeam : m.awayTeam, 11)}` });
+      } else if (m.h2hOK === false) {
+        sources.push({ ok: false, txt: 'H2H-история против прогноза' });
+      }
+    } else {
+      if (m.histAgree === true)  sources.push({ ok: true,  txt: `Архив: ${trunc(favTeam,13)} побеждает чаще` });
+      else if (m.histAgree === false) sources.push({ ok: false, txt: 'Архив противоречит прогнозу' });
+    }
     if (m.steamData?.agrees === true)  sources.push({ ok: true,  txt: 'Умные деньги идут на фаворита' });
     else if (m.steamData?.agrees === false) sources.push({ ok: false, txt: 'Умные деньги против фаворита' });
     if (m.domData && Math.abs(m.domData?.score || 0) >= 0.25) {
       const df = (m.domData.score > 0) === favHome ? favTeam : (favHome ? m.awayTeam : m.homeTeam);
       sources.push({ ok: (m.domData.score > 0) === favHome, txt: `Доминирование: ${trunc(df,13)} выигрывает убедительно` });
     }
-    if (m.nnProb !== null && m.nnProb !== undefined && Math.abs(m.nnProb - 50) >= 7) {
-      const nnFav = m.nnProb > 50 ? m.homeTeam : m.awayTeam;
-      sources.push({ ok: m.nnAgrees === true, txt: `Нейросеть: ${trunc(nnFav,13)} ${Math.max(m.nnProb, 100 - m.nnProb).toFixed(0)}%` });
+    if (!isFootball) {
+      if (m.nnProb !== null && m.nnProb !== undefined && Math.abs(m.nnProb - 50) >= 7) {
+        const nnFav = m.nnProb > 50 ? m.homeTeam : m.awayTeam;
+        sources.push({ ok: m.nnAgrees === true, txt: `Нейросеть: ${trunc(nnFav,13)} ${Math.max(m.nnProb, 100 - m.nnProb).toFixed(0)}%` });
+      }
+      if (h?.elo && (h.elo.p1 !== 1500 || h.elo.p2 !== 1500)) {
+        const eloFav = h.elo.p1 > h.elo.p2 ? m.homeTeam : m.awayTeam;
+        sources.push({ ok: (h.elo.p1 > h.elo.p2) === favHome, txt: `Elo: ${trunc(eloFav,13)} рейтинг выше (${Math.max(h.elo.p1,h.elo.p2)})` });
+      }
+      if (h?.h2h && h.h2h.total >= 2) {
+        const h2hHome = h.h2h.p1Wins > h.h2h.p2Wins;
+        const h2hSrc  = h.h2h.source ? ` [${h.h2h.source}]` : '';
+        sources.push({ ok: h2hHome === favHome, txt: `H2H${h2hSrc}: ${h.h2h.p1Wins}–${h.h2h.p2Wins} за ${trunc(h2hHome ? m.homeTeam : m.awayTeam, 11)}` });
+      }
     }
-    if (h?.elo && (h.elo.p1 !== 1500 || h.elo.p2 !== 1500)) {
-      const eloFav = h.elo.p1 > h.elo.p2 ? m.homeTeam : m.awayTeam;
-      sources.push({ ok: (h.elo.p1 > h.elo.p2) === favHome, txt: `Elo: ${trunc(eloFav,13)} рейтинг выше (${Math.max(h.elo.p1,h.elo.p2)})` });
-    }
-    if (h?.h2h && h.h2h.total >= 2) {
-      const h2hHome = h.h2h.p1Wins > h.h2h.p2Wins;
-      const h2hSrc  = h.h2h.source ? ` [${h.h2h.source}]` : '';
-      sources.push({ ok: h2hHome === favHome, txt: `H2H${h2hSrc}: ${h.h2h.p1Wins}–${h.h2h.p2Wins} за ${trunc(h2hHome ? m.homeTeam : m.awayTeam, 11)}` });
+
+    // Football: cross-market Poisson consistency is always a baseline source
+    if (isFootball && preds.length > 0) {
+      const topPredRef = preds[0]; // already sorted by EV
+      sources.push({ ok: topPredRef.evPct > 0, txt: `Пуассон-модель: кросс-рынок EV ${topPredRef.evPct > 0 ? '+' : ''}${topPredRef.evPct.toFixed(1)}%` });
     }
 
     const okCount  = sources.filter(s => s.ok).length;
@@ -1598,7 +1695,8 @@ const App = (() => {
       : `<div class="cp-src">— Статистика загружается...</div>`;
     const risks = [];
     if ((m._instab||0) > 0.35)            risks.push('нестабильная игра');
-    if (m.histAgree === false)             risks.push('архив против');
+    if (isFootball && m.formOK === false)  risks.push('форма против');
+    if (!isFootball && m.histAgree === false) risks.push('архив против');
     if (m.steamData?.agrees === false)     risks.push('умные деньги против');
     if (_dupeMap.has(m.homeTeam)||_dupeMap.has(m.awayTeam)) risks.push('дубль матчей');
 
@@ -1700,7 +1798,7 @@ const App = (() => {
       <div class="k-right"><span class="k-stake">${topPred.kelly.stake}₽</span><span class="k-odds">@ ${topPred.odds.toFixed(2)}</span></div>
     </div>` : '';
 
-    const aiHtml = isTT && m.isLive ? `
+    const aiHtml = (isTT || isFootball) && m.isLive ? `
       <button class="btn-ai" id="aibtn-${m.id}" onclick="App.loadAI('${m.id}', this)">🤖 AI анализ</button>
       <div class="ai-result" id="ai-${m.id}" style="display:none"></div>` : '';
     const leonBtn   = m.leonUrl ? `<a class="btn-leon" href="${esc(m.leonUrl)}" target="_blank" rel="noopener">Открыть на Леоне →</a>` : '';
@@ -1783,6 +1881,7 @@ const App = (() => {
       ${(domHtml||velHtml) ? `<div class="fa-section">${domHtml}${velHtml}</div>` : ''}
       ${distribHtml ? `<div class="fa-section">${distribHtml}</div>` : ''}
       ${historyRowHtml(m) ? `<div class="fa-section">${historyRowHtml(m)}</div>` : ''}
+      ${footballStatsRowHtml(m) ? `<div class="fa-section">${footballStatsRowHtml(m)}</div>` : ''}
       <div class="fa-section">
         <div class="fa-sec-title">📊 Прогнозы</div>
         ${predsHtml}

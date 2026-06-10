@@ -850,6 +850,129 @@ def get_ext_rating(player_name):
     return _EXT_RATING_DB.get(_norm(player_name))
 
 
+# ── Football Team Statistics (SofaScore) ─────────────────────────────────────
+
+_FOOTBALL_TEAM_CACHE = {}
+_FOOTBALL_TEAM_LOCK  = threading.Lock()
+FOOTBALL_TEAM_TTL    = 3600 * 4  # 4 hours
+
+
+def _search_football_team_sofa(name):
+    """Search SofaScore for a football team by name."""
+    q = urllib.parse.quote(name.strip())
+    try:
+        data = sofa_json(f'https://api.sofascore.com/api/v1/search/all/?q={q}&page=0')
+        teams = data.get('teams', [])
+        # Prefer football teams
+        for item in teams:
+            t = item.get('team', {})
+            if (t.get('sport') or {}).get('slug') == 'football':
+                return t.get('id')
+        if teams:
+            return (teams[0].get('team') or {}).get('id')
+    except Exception as ex:
+        print(f'[sofa-fbteam] {ex}')
+    return None
+
+
+def _get_team_events_sofa(team_id, pages=2):
+    """Fetch last matches for a team from SofaScore."""
+    all_events = []
+    for page in range(pages):
+        try:
+            data = sofa_json(f'https://api.sofascore.com/api/v1/team/{team_id}/events/last/{page}')
+            evs = data.get('events', [])
+            if not evs:
+                break
+            all_events.extend(evs)
+        except Exception:
+            break
+    return all_events
+
+
+def _compute_football_team_stats(events, team_id):
+    """Compute form + goal averages for a football team from SofaScore events."""
+    wins = draws = losses = 0
+    goals_for = goals_against = 0
+    form = []
+    total = 0
+    for ev in events[:12]:
+        ht = (ev.get('homeTeam') or {}).get('id')
+        at = (ev.get('awayTeam') or {}).get('id')
+        wc = ev.get('winnerCode')   # 1=home wins, 2=away wins, 3=draw
+        hs_sc = ev.get('homeScore') or {}
+        as_sc = ev.get('awayScore') or {}
+        hg = hs_sc.get('current') or hs_sc.get('normaltime') or 0
+        ag = as_sc.get('current') or as_sc.get('normaltime') or 0
+        is_home = (ht == team_id)
+        is_away = (at == team_id)
+        if not is_home and not is_away:
+            continue
+        total += 1
+        my_g   = hg if is_home else ag
+        opp_g  = ag if is_home else hg
+        goals_for     += my_g
+        goals_against += opp_g
+        if wc == 3:
+            draws += 1; form.append('D')
+        elif (wc == 1 and is_home) or (wc == 2 and is_away):
+            wins += 1; form.append('W')
+        elif wc in (1, 2):
+            losses += 1; form.append('L')
+    if total == 0:
+        return None
+    return {
+        'wins': wins, 'draws': draws, 'losses': losses, 'matches': total,
+        'avgFor':     round(goals_for     / total, 2),
+        'avgAgainst': round(goals_against / total, 2),
+        'winRate':    round(wins / total, 3),
+        'form':       form[:5],
+    }
+
+
+def get_football_team_stats(home_name, away_name):
+    """Return form + goal stats for both football teams. Cached 4h."""
+    now = time.time()
+    key = (home_name.lower().strip(), away_name.lower().strip())
+    with _FOOTBALL_TEAM_LOCK:
+        c = _FOOTBALL_TEAM_CACHE.get(key)
+        if c and now - c['ts'] < FOOTBALL_TEAM_TTL:
+            return c['data']
+
+    result = {'home': None, 'away': None, 'h2h': None}
+    try:
+        h_id = _search_football_team_sofa(home_name)
+        a_id = _search_football_team_sofa(away_name)
+        if h_id:
+            evs_h = _get_team_events_sofa(h_id)
+            result['home'] = _compute_football_team_stats(evs_h, h_id)
+            if a_id:
+                h2h_h = h2h_a = 0
+                for ev in evs_h:
+                    ht2 = (ev.get('homeTeam') or {}).get('id')
+                    at2 = (ev.get('awayTeam') or {}).get('id')
+                    wc2 = ev.get('winnerCode')
+                    if {ht2, at2} == {h_id, a_id} and wc2 in (1, 2, 3):
+                        if (wc2 == 1 and ht2 == h_id) or (wc2 == 2 and at2 == h_id):
+                            h2h_h += 1
+                        elif wc2 in (1, 2):
+                            h2h_a += 1
+                if h2h_h + h2h_a > 0:
+                    result['h2h'] = {
+                        'homeWins': h2h_h, 'awayWins': h2h_a,
+                        'total': h2h_h + h2h_a, 'source': 'sofascore',
+                    }
+        if a_id:
+            evs_a = _get_team_events_sofa(a_id)
+            result['away'] = _compute_football_team_stats(evs_a, a_id)
+    except Exception as ex:
+        print(f'[football-stats] {ex}')
+
+    with _FOOTBALL_TEAM_LOCK:
+        _FOOTBALL_TEAM_CACHE[key] = {'data': result, 'ts': now}
+    return result
+
+
 def _pre_fetch_ratings():
     """Background thread: pre-load external ratings on startup."""
     time.sleep(15)  # wait for server to stabilise
@@ -1399,6 +1522,61 @@ def _rule_analysis(p1, p2, homeProb, ev, stats):
     return ' '.join(parts)
 
 
+def build_football_prompt(p1, p2, score, period, minute, homeProb, ev, w1, wx, w2, stats=None):
+    """AI prompt для футбольного матча со статистикой команд."""
+    hs  = (stats or {}).get('home') or {}
+    as_ = (stats or {}).get('away') or {}
+    h2h = (stats or {}).get('h2h') or {}
+
+    def fmt_team(name, st):
+        if not st or st.get('matches', 0) < 3:
+            return f'{name}: нет данных'
+        frm = ''.join(st.get('form', []))
+        return (f"{name}: {st['winRate']*100:.0f}% побед, форма {frm}, "
+                f"голы {st['avgFor']:.1f} за/{st['avgAgainst']:.1f} против")
+
+    h2h_str = (f"{h2h.get('homeWins',0)}–{h2h.get('awayWins',0)} из {h2h.get('total',0)} встреч"
+               if h2h and h2h.get('total', 0) >= 1 else 'нет данных')
+    min_str = f" {minute}'" if minute else ''
+    return f"""Ты эксперт-аналитик ставок на футбол. Проведи краткий анализ матча в лайве.
+
+Матч: {p1} vs {p2}
+Счёт: {score} · {period}{min_str}
+Котировки Леон: П1 @ {w1 or '—'}, Ничья @ {wx or '—'}, П2 @ {w2 or '—'}
+
+Статистика команд (SofaScore):
+- {fmt_team(p1, hs)}
+- {fmt_team(p2, as_)}
+- H2H ({p1} vs {p2}): {h2h_str}
+
+Пуассон-модель (кросс-рынок): вероятность победы {p1} = {homeProb:.0f}%, EV = {ev:.1f}%
+
+Напиши КРАТКИЙ анализ (2-3 предложения) на русском. Учти счёт, время, форму команд.
+Последняя строка ОБЯЗАТЕЛЬНО: ПРОГНОЗ: [П1/П2/Ничья или Тотал/Фора], УВЕРЕННОСТЬ: [ВЫСОКАЯ/СРЕДНЯЯ/НИЗКАЯ]"""
+
+
+def _rule_football_analysis(p1, p2, homeProb, ev, stats):
+    """Правиловой анализ футбольного матча без AI."""
+    hs  = (stats or {}).get('home') or {}
+    as_ = (stats or {}).get('away') or {}
+    h2h = (stats or {}).get('h2h') or {}
+    parts = []
+    if hs and as_ and hs.get('matches', 0) >= 3 and as_.get('matches', 0) >= 3:
+        d = hs['winRate'] - as_['winRate']
+        fav = p1 if d > 0 else p2
+        if abs(d) >= 0.10:
+            parts.append(f"По форме фаворит — {fav} ({max(hs['winRate'],as_['winRate'])*100:.0f}% vs {min(hs['winRate'],as_['winRate'])*100:.0f}% побед).")
+    if h2h and h2h.get('total', 0) >= 2:
+        fav = p1 if h2h['homeWins'] > h2h['awayWins'] else p2
+        parts.append(f"H2H: лидирует {fav} ({h2h['homeWins']}:{h2h['awayWins']}).")
+    fav_name = p1 if homeProb > 50 else p2
+    conf = 'ВЫСОКАЯ' if abs(homeProb-50) > 12 and ev > 5 else 'СРЕДНЯЯ' if abs(homeProb-50) > 6 else 'НИЗКАЯ'
+    if not parts:
+        parts.append(f"Пуассон-модель: вероятность победы {fav_name} = {homeProb:.0f}% (EV {ev:.1f}%).")
+    parts.append(f"ПРОГНОЗ: {fav_name}, УВЕРЕННОСТЬ: {conf}")
+    return ' '.join(parts)
+
+
 def get_ai_summary(signals):
     key = 'sum_' + '_'.join(s.get('match', '')[:12] for s in signals[:3])
     now = time.time()
@@ -1413,7 +1591,7 @@ def get_ai_summary(signals):
     signals_text = '\n'.join(lines)
     if GROQ_API_KEY:
         try:
-            prompt = (f"Ты аналитик ставок на настольный теннис. Активные сигналы прямо сейчас:\n\n"
+            prompt = (f"Ты аналитик ставок на спорт. Активные VALUE-сигналы прямо сейчас:\n\n"
                       f"{signals_text}\n\n"
                       f"Дай краткий обзор (3-4 предложения): какой сигнал самый перспективный, "
                       f"на что обратить внимание, есть ли риски. Будь конкретным.")
@@ -1433,34 +1611,57 @@ def get_ai_summary(signals):
     return result
 
 
-def get_ai_analysis(p1, p2, score, homeProb, ev, w1, w2, stats):
-    key = f'{p1}||{p2}||{score}'
+def get_ai_analysis(p1, p2, score, homeProb, ev, w1, w2, stats,
+                    sport='tt', wx='', period='', minute=0):
+    key = f'{p1}||{p2}||{score}||{sport}'
     now = time.time()
     with _PLAYER_LOCK:
         c = _AI_CACHE.get(key)
         if c and now - c['ts'] < AI_TTL:
             return c['data']
 
-    if GROQ_API_KEY:
-        try:
-            prompt = build_tt_prompt(p1, p2, score, homeProb, ev, w1, w2, stats)
-            text   = groq_chat(prompt)
-            result = {'text': text, 'source': 'Llama-3.3-70b (Groq)', 'ok': True}
-        except Exception as ex:
-            print(f'[groq-error] {type(ex).__name__}: {ex}')
+    if sport == 'football':
+        # Fetch team stats if not already provided
+        fb_stats = stats if (stats.get('home') or stats.get('away')) else {}
+        if not fb_stats.get('home') and not fb_stats.get('away'):
+            try:
+                fb_stats = get_football_team_stats(p1, p2)
+            except Exception:
+                pass
+        if GROQ_API_KEY:
+            try:
+                prompt = build_football_prompt(p1, p2, score, period, minute,
+                                               homeProb, ev, w1, wx, w2, fb_stats)
+                text   = groq_chat(prompt)
+                result = {'text': text, 'source': 'Llama-3.3-70b (Groq)', 'ok': True}
+            except Exception as ex:
+                print(f'[groq-fb] {type(ex).__name__}: {ex}')
+                result = {'text': _rule_football_analysis(p1, p2, homeProb, ev, fb_stats),
+                          'source': 'Правила (Groq недоступен)', 'ok': True}
+        else:
+            result = {'text': _rule_football_analysis(p1, p2, homeProb, ev, fb_stats),
+                      'source': 'Правила', 'ok': True}
+    else:
+        if GROQ_API_KEY:
+            try:
+                prompt = build_tt_prompt(p1, p2, score, homeProb, ev, w1, w2, stats)
+                text   = groq_chat(prompt)
+                result = {'text': text, 'source': 'Llama-3.3-70b (Groq)', 'ok': True}
+            except Exception as ex:
+                print(f'[groq-error] {type(ex).__name__}: {ex}')
+                try:
+                    rule_text = _rule_analysis(p1, p2, homeProb, ev, stats)
+                except Exception as rex:
+                    print(f'[rule-error] {rex}')
+                    rule_text = f'Математическая модель: {p1} — {homeProb:.0f}% вероятность победы.'
+                result = {'text': rule_text, 'source': 'Правила (Groq недоступен)', 'ok': True}
+        else:
             try:
                 rule_text = _rule_analysis(p1, p2, homeProb, ev, stats)
             except Exception as rex:
                 print(f'[rule-error] {rex}')
                 rule_text = f'Математическая модель: {p1} — {homeProb:.0f}% вероятность победы.'
-            result = {'text': rule_text, 'source': 'Правила (Groq недоступен)', 'ok': True}
-    else:
-        try:
-            rule_text = _rule_analysis(p1, p2, homeProb, ev, stats)
-        except Exception as rex:
-            print(f'[rule-error] {rex}')
-            rule_text = f'Математическая модель: {p1} — {homeProb:.0f}% вероятность победы.'
-        result = {'text': rule_text, 'source': 'Правила', 'ok': True}
+            result = {'text': rule_text, 'source': 'Правила', 'ok': True}
 
     with _PLAYER_LOCK:
         _AI_CACHE[key] = {'data': result, 'ts': now}
@@ -1493,6 +1694,8 @@ class Handler(SimpleHTTPRequestHandler):
             self._nn_stats_api()
         elif self.path.startswith('/api/h2h'):
             self._h2h_api()
+        elif self.path.startswith('/api/football-stats'):
+            self._football_stats_api()
         elif self.path == '/health':
             self.send_response(200)
             self.send_header('Content-Type', 'text/plain')
@@ -1583,22 +1786,41 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json_resp(400, {'error': 'p1 and p2 required'}); return
             score    = g('score', '0:0')
             homeProb = float(g('homeProb', '50'))
-            ev       = float(g('ev', '0'))
-            w1       = g('w1'); w2 = g('w2')
-            # Local stats first (fast), fallback to sofascore
-            stats = get_local_player_stats(p1, p2)
-            if not stats.get('p1') and not stats.get('p2'):
-                try:
-                    sofa = get_player_stats(p1, p2)
-                    if sofa.get('p1') or sofa.get('p2'):
-                        stats = sofa
-                except Exception:
-                    pass
-            result = get_ai_analysis(p1, p2, score, homeProb, ev, w1, w2, stats)
+            ev_val   = float(g('ev', '0'))
+            w1       = g('w1'); wx = g('wx'); w2 = g('w2')
+            sport    = g('sport', 'tt')
+            period   = g('period', '')
+            minute   = int(g('minute', '0') or 0)
+            if sport == 'football':
+                stats = {}
+            else:
+                # TT: local stats first, fallback sofascore
+                stats = get_local_player_stats(p1, p2)
+                if not stats.get('p1') and not stats.get('p2'):
+                    try:
+                        sofa = get_player_stats(p1, p2)
+                        if sofa.get('p1') or sofa.get('p2'):
+                            stats = sofa
+                    except Exception:
+                        pass
+            result = get_ai_analysis(p1, p2, score, homeProb, ev_val, w1, w2, stats,
+                                     sport=sport, wx=wx, period=period, minute=minute)
             self._json_resp(200, {**result, 'groqEnabled': bool(GROQ_API_KEY)})
         except Exception as ex:
             print(f'[ai-api] {ex}')
             self._json_resp(500, {'error': str(ex), 'text': 'Ошибка AI-сервера', 'source': ''})
+
+    def _football_stats_api(self):
+        try:
+            qs   = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            home = qs.get('home', [''])[0].strip()
+            away = qs.get('away', [''])[0].strip()
+            if not home or not away:
+                self._json_resp(400, {'error': 'home and away required'}); return
+            result = get_football_team_stats(home, away)
+            self._json_resp(200, result)
+        except Exception as ex:
+            self._json_resp(500, {'error': str(ex)})
 
     def _player_stats_api(self):
         try:

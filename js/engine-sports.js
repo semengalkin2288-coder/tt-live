@@ -142,9 +142,8 @@ const SportsEngine = (() => {
   // ── Signal / confidence ───────────────────────────────────
   // edge = model_prob - market_implied_prob (how much we disagree with market)
   function signalLevel(evPct, prob, edge) {
-    if (evPct >= 8  && prob >= 0.60 && edge >= 0.05) return 'high';
-    if (evPct >= 4  && prob >= 0.54 && edge >= 0.03) return 'medium';
-    if (evPct >= 1.5 && prob >= 0.51 && edge >= 0.015) return 'low';
+    if (evPct >= 7  && prob >= 0.58 && edge >= 0.04) return 'high';
+    if (evPct >= 3.5 && prob >= 0.52 && edge >= 0.025) return 'medium';
     return 'none';
   }
 
@@ -165,8 +164,9 @@ const SportsEngine = (() => {
   //   3. Use λ to compute ALL market probabilities from first principles
   //   4. Compare model prob vs bookmaker's own market prices
   //   5. Signal where model finds genuine cross-market inconsistency
+  //   6. Football team form/H2H from SofaScore adds confirmation layer
 
-  function analyzeGoalSport(event, bankroll, sport) {
+  function analyzeGoalSport(event, bankroll, sport, teamStats) {
     const {
       homeTeam, awayTeam,
       homeScore = 0, awayScore = 0,
@@ -267,18 +267,45 @@ const SportsEngine = (() => {
     preds.sort((a, b) => b.evPct - a.evPct);
 
     const scoreDiff = homeScore - awayScore;
-    const momentum  = Math.max(5, Math.min(95, 50 + scoreDiff * 10));
+    const momentum  = Math.max(5, Math.min(95, 50 + scoreDiff * 12));
     const bestSig   = preds[0]?.signal || 'none';
     const topEV     = preds[0]?.evPct  || 0;
     const topProb   = preds[0]?.prob    || 0.5;
-    const topConf   = confidence(topProb, topEV);
+
+    // ── Team stats confirmations (football) ────────────────
+    let formOK  = null;  // true/false/null = form confirms/contradicts/unknown
+    let h2hOK   = null;
+    let fbStats = null;
+    if (isFootball && teamStats) {
+      const hs = teamStats.home, as_ = teamStats.away;
+      const h2h = teamStats.h2h;
+      const modelFavHome = model.p1 > model.p2;
+
+      if (hs && as_ && hs.matches >= 3 && as_.matches >= 3) {
+        // Does historical goal ratio agree with model?
+        const statLh = hs.avgFor  * (as_.avgAgainst / 1.3 || 1);
+        const statLa = as_.avgFor * (hs.avgAgainst  / 1.3 || 1);
+        const statFavHome = statLh > statLa;
+        // Does recent form agree?
+        const formFavHome = hs.winRate > as_.winRate;
+        formOK = (statFavHome === modelFavHome) && (formFavHome === modelFavHome);
+        fbStats = { home: hs, away: as_, h2h };
+      }
+      if (h2h && h2h.total >= 2) {
+        h2hOK = (h2h.homeWins > h2h.awayWins) === (model.p1 > model.p2);
+      }
+    }
+
+    // Boost topConf when stats confirm
+    const confirmBonus = (formOK === true ? 6 : 0) + (h2hOK === true ? 4 : 0);
+    const topConf = confidence(topProb, topEV) + confirmBonus;
 
     const vigParts = [1/w1Odds, wxOdds ? 1/wxOdds : 0, 1/w2Odds];
     const margin = ((vigParts.reduce((a,b)=>a+b,0)-1)*100).toFixed(1);
 
     return {
       ...event,
-      predictions: preds, bestSignal: bestSig, topEV, topConf,
+      predictions: preds, bestSignal: bestSig, topEV, topConf: Math.min(95, topConf),
       momentum, leonMargin: margin,
       matchWinHomeProb: Math.round(model.p1 * 100),
       matchWinAwayProb: Math.round(model.p2 * 100),
@@ -286,7 +313,7 @@ const SportsEngine = (() => {
       momentumAdj:      +(scoreDiff * 1.5).toFixed(1),
       setWinHomeProb:   Math.round(model.p1 * 100),
       doneSets: [], currentPts: 0,
-      // Expose model lambdas for debugging
+      formOK, h2hOK, fbStats,
       _lh: +lh.toFixed(2), _la: +la.toFixed(2),
     };
   }
@@ -499,10 +526,11 @@ const SportsEngine = (() => {
   }
 
   // ── Public API ────────────────────────────────────────────
-  function analyze(event, bankroll = 1000) {
+  // extraData: { teamStats } for football (from SofaScore), null otherwise
+  function analyze(event, bankroll = 1000, extraData = null) {
     const s = event.sport || 'tt';
     try {
-      if (s === 'football' || s === 'hockey') return analyzeGoalSport(event, bankroll, s);
+      if (s === 'football' || s === 'hockey') return analyzeGoalSport(event, bankroll, s, extraData);
       if (s === 'tennis')                     return analyzeTennis(event, bankroll);
     } catch (e) {
       console.error(`[SportsEngine.${s}]`, e);
