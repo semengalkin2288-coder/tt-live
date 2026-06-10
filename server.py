@@ -82,15 +82,22 @@ TT_QUERIES = [
 ]
 
 FOOTBALL_QUERIES = [
-    # Virtual / cyber football (24/7 — always live, like TT virtual leagues)
-    'Liga+Pro+Football', 'Virtual+Football', 'Кибер+футбол', 'Cyber+Football',
-    'InPlay+Football', 'Football+Liga', 'Football+Pro', 'Виртуальный+футбол',
-    'Setka+Cup+Football', 'Liga+Pro',
-    # Real leagues
-    'Футбол', 'Champions+League', 'Europa+League', 'Conference+League',
+    # Broad search — catches all real football on Leon
+    'Футбол',
+    # Top international competitions
+    'Champions+League', 'Europa+League', 'Conference+League',
+    'World+Cup', 'Euro', 'Copa+America', 'Nations+League',
+    'Club+World+Cup',
+    # Top domestic leagues
     'Premier+League', 'La+Liga', 'Bundesliga', 'Serie+A', 'Ligue+1',
-    'Eredivisie', 'РПЛ', 'MLS', 'Liga+MX', 'Brasileirao', 'Primeira+Liga',
-    'Super+Lig', 'Ekstraklasa', 'Scottish', 'Belgian', 'Copa',
+    'Eredivisie', 'Primeira+Liga', 'Super+Lig', 'Belgian',
+    'Ekstraklasa', 'Scottish+Premiership',
+    # CIS / Russia
+    'РПЛ', 'ФНЛ', 'Кубок+России',
+    # Americas
+    'MLS', 'Liga+MX', 'Brasileirao', 'Copa+Libertadores', 'Copa+Sudamericana',
+    # Africa / Asia
+    'African', 'Asian', 'CAF', 'AFC',
 ]
 
 SPORT_QUERIES = {
