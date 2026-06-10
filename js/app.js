@@ -1717,15 +1717,21 @@ const App = (() => {
       }
     }
 
-    // ── Источник 2: счёт (для футбола — голы, для TT — сеты) ──
+    // ── Источник 2: счёт ──
     if (m.isLive) {
       const sLead = (m.homeSets || 0) - (m.awaySets || 0);
       if (Math.abs(sLead) >= 1) {
         const sLeader = sLead > 0 ? m.homeTeam : m.awayTeam;
-        const scoreLabel = isFootball
-          ? `Счёт ${m.periodLabel || ''}: ${trunc(sLeader,12)} ведёт ${m.homeScore}:${m.awayScore}`
-          : `Счёт сетов: ${trunc(sLeader,12)} ведёт ${m.homeSets}:${m.awaySets}`;
-        sources.push({ ok: (sLead > 0) === favHome, txt: scoreLabel });
+        const scoreOk  = (sLead > 0) === favHome;
+        let txt;
+        if (isFootball) {
+          const pl = m.periodLabel ? ` (${m.periodLabel})` : '';
+          txt = `Счёт${pl}: ${trunc(sLeader,12)} ведёт ${m.homeScore}:${m.awayScore}`;
+          if (!scoreOk) txt += ' — ставка на камбэк';
+        } else {
+          txt = `Счёт сетов: ${trunc(sLeader,12)} ведёт ${m.homeSets}:${m.awaySets}`;
+        }
+        sources.push({ ok: scoreOk, txt });
       }
     }
 
@@ -2079,10 +2085,11 @@ const App = (() => {
     const evSign = p.evPct > 0 ? '+' : '';
     const evCls  = p.evPct > 7 ? 'ev-high' : p.evPct > 3 ? 'ev-med' : p.evPct > 0 ? 'ev-low' : 'ev-neg';
     const sigLbl = p.signal === 'high' ? 'HIGH VALUE' : p.signal === 'medium' ? 'VALUE' : 'Слабый';
+    const comebackNote = p.isComeback ? '<span class="comeback-note" title="Команда проигрывает но рынок считает её фаворитом для камбэка">↩️ камбэк</span>' : '';
     return `<div class="pred-row ${rowCls}">
       <span class="pred-icon">${icon}</span>
       <div class="pred-body">
-        <div class="pred-market">${esc(p.market)}</div>
+        <div class="pred-market">${esc(p.market)} ${comebackNote}</div>
         <div class="pred-label">${esc(p.label)}</div>
         <div class="pred-meta">${(p.prob*100).toFixed(0)}% вер. · кф ${p.odds.toFixed(2)} · ${sigLbl}</div>
       </div>

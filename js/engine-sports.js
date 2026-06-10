@@ -217,15 +217,37 @@ const SportsEngine = (() => {
 
     // ── Step 4: Build predictions ─────────────────────────
     const preds = [];
+    const scoreDiffNow = homeScore - awayScore;
 
     function addPred(tag, market, label, modelProb, mktImplied, odds, evPct, ph) {
       if (!odds || odds <= 1.1 || modelProb < 0.01) return;
       const edge = modelProb - mktImplied;
       const sig = signalLevel(evPct, modelProb, edge);
       if (sig === 'none') return;
+
+      // Sanity: skip total predictions that are already resolved by current score
+      if (tag === 'total' || tag === 'h1tot') {
+        const currentTotal = homeScore + awayScore;
+        const lineNum = parseFloat(label.replace(/[^\d.]/g, ''));
+        if (!isNaN(lineNum)) {
+          if (label.startsWith('Больше') && currentTotal > lineNum) return; // already over
+          if (label.startsWith('Меньше') && currentTotal > lineNum) return; // already over, under impossible
+        }
+      }
+
+      // Tag comeback bets (score vs model disagree)
+      let isComeback = false;
+      if (tag === 'match' && ph !== null) {
+        const homeLeading = scoreDiffNow > 0;
+        const modelFavHome = ph === true;
+        if (homeLeading && !modelFavHome) isComeback = true;   // home leads, model says away
+        if (!homeLeading && scoreDiffNow < 0 && modelFavHome) isComeback = true; // away leads, model says home
+      }
+
       preds.push({
         tag, market, label, prob: modelProb, odds, evPct,
         kelly: kelly(modelProb, odds, bankroll), signal: sig, predictedHome: ph,
+        isComeback,
       });
     }
 

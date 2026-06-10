@@ -1511,6 +1511,25 @@ def get_sport_data(sport):
     new_cache = {'events': result, 'ts': now, 'source': label, 'errors': []}
     with _lock:
         _caches[sport] = new_cache
+
+    # Pre-fetch football team stats (H2H) in background for live matches
+    if sport == 'football':
+        live_fb = [r for r in result if r['isLive'] and r.get('homeTeam') and r.get('awayTeam')]
+        if live_fb:
+            def _prefetch_fb_stats(matches):
+                for m in matches[:8]:   # limit to 8 concurrent
+                    key = (m['homeTeam'].lower().strip(), m['awayTeam'].lower().strip())
+                    with _FOOTBALL_TEAM_LOCK:
+                        cached = _FOOTBALL_TEAM_CACHE.get(key)
+                    if cached and time.time() - cached['ts'] < FOOTBALL_TEAM_TTL:
+                        continue
+                    try:
+                        get_football_team_stats(m['homeTeam'], m['awayTeam'])
+                    except Exception:
+                        pass
+            t = threading.Thread(target=_prefetch_fb_stats, args=(live_fb,), daemon=True)
+            t.start()
+
     return new_cache
 
 
