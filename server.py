@@ -1074,12 +1074,14 @@ def _base_names(ev, base):
     competitors = ev.get('competitors', base.get('competitors', []))
     hc = next((c for c in competitors if c.get('homeAway') == 'HOME'), {})
     ac = next((c for c in competitors if c.get('homeAway') == 'AWAY'), {})
-    nd = ev.get('nameDefault', base.get('nameDefault', ''))
+    # Prefer 'name' (Leon's Russian/localized display) over 'nameDefault' (native language)
+    nd = (ev.get('name') or base.get('name') or
+          ev.get('nameDefault') or base.get('nameDefault', ''))
     if ' - ' in nd:
         hn, an = nd.split(' - ', 1)
     else:
-        hn = hc.get('nameDefault') or hc.get('name') or 'Команда 1'
-        an = ac.get('nameDefault') or ac.get('name') or 'Команда 2'
+        hn = hc.get('name') or hc.get('nameDefault') or 'Команда 1'
+        an = ac.get('name') or ac.get('nameDefault') or 'Команда 2'
     league = ev.get('league', base.get('league')) or {}
     lg = (league.get('nameDefault') or league.get('name') or '') if isinstance(league, dict) else ''
     url_path = base.get('url') or (ev.get('url') if ev else '') or ''
@@ -1203,7 +1205,9 @@ def _odds_football(markets):
     all_hdps   = {}   # {line: (home_odds, away_odds)}
 
     _skip_kw = ('сет', 'партия', 'гейм', 'угловой', 'corner', 'карточк', 'yellow', 'card',
-                'удар', 'офсайд', 'фол', 'вбрасыван')
+                'удар', 'офсайд', 'фол', 'вбрасыван', 'shot', 'foul', 'offside',
+                'серии', 'оба матч', 'по итогам', 'двух матч', 'турнир',
+                'пробит', 'штрафн', 'вбрасывани')
 
     for m in (markets or []):
         if not m.get('open', True): continue
@@ -1266,13 +1270,13 @@ def _odds_football(markets):
                 if ml:
                     line = float(ml.group())
                     if is_h1:
-                        if h1_tot_line is None:
+                        if line <= 4.5 and h1_tot_line is None:
                             h1_tot_over, h1_tot_under, h1_tot_line = ov[0], un[0], line
-                    elif not is_team_tot:
+                    elif not is_team_tot and line <= 8.5:  # cap: goals never exceed 8.5
                         all_totals[line] = (ov[0], un[0])
                         # Pick main total: prefer line closest to 2.5 (standard football total)
                         if tot_line is None or abs(line - 2.5) < abs(tot_line - 2.5):
-                            tot_line = line; tot_over = ov[0]; tot_under = un[0]
+                            tot_line = line; tot_over = ov[0]; tot_under = un[0]  # noqa
 
         # ── Handicap (all lines) ──────────────────────────────
         if ('фора' in mn or 'гандикап' in mn or 'handicap' in mn) and len(runners) == 2:
