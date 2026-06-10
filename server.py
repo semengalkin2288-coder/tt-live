@@ -1195,16 +1195,29 @@ def _odds_football(markets):
     tot_over = tot_under = tot_line = None
     hdp_h = hdp_a = hdp_l = None
     best_bal = 999.0
+    btts_yes = btts_no = None
+    dc_1x = dc_x2 = dc_12 = None
+    h1_w1 = h1_wx = h1_w2 = None
+    h1_tot_over = h1_tot_under = h1_tot_line = None
+    all_totals = {}   # {line: (over_odds, under_odds)}
+    all_hdps   = {}   # {line: (home_odds, away_odds)}
+
+    _skip_kw = ('сет', 'партия', 'гейм', 'угловой', 'corner', 'карточк', 'yellow', 'card',
+                'удар', 'офсайд', 'фол', 'вбрасыван')
+
     for m in (markets or []):
         if not m.get('open', True): continue
         runners = m.get('runners', [])
         if len(runners) < 2: continue
         mn = m.get('name', '').lower()
-        rn_low = [r.get('name', '').strip().lower() for r in runners]
+        rn_low  = [r.get('name', '').strip().lower() for r in runners]
         rn_orig = [r.get('name', '').strip() for r in runners]
 
-        # 3-way
-        if not w1 and len(runners) == 3:
+        is_h1 = any(x in mn for x in ('первый тайм', '1-й тайм', '1й тайм', 'first half', 'half 1', '1 half'))
+        is_h2 = any(x in mn for x in ('второй тайм', '2-й тайм', 'second half'))
+
+        # ── 3-way 1X2 (full match, not halves) ──────────────
+        if not w1 and not is_h1 and not is_h2 and len(runners) == 3:
             has1 = '1' in rn_orig; has2 = '2' in rn_orig
             hasX = any(n in ('x', 'ничья', 'draw') for n in rn_low)
             if has1 and has2 and hasX:
@@ -1215,17 +1228,29 @@ def _odds_football(markets):
                     elif n == '2': w2 = p
                     elif nl in ('x', 'ничья', 'draw'): wx = p
 
-        # 2-way
-        if not w1 and len(runners) == 2 and '1' in rn_orig and '2' in rn_orig:
+        # ── 2-way 1X2 ────────────────────────────────────────
+        if not w1 and not is_h1 and len(runners) == 2 and '1' in rn_orig and '2' in rn_orig:
             for r in runners:
                 n, p = r.get('name', '').strip(), r.get('price')
                 if p and p > 1.0:
                     if n == '1': w1 = p
                     elif n == '2': w2 = p
 
-        # Total
+        # ── 1st half 1X2 ─────────────────────────────────────
+        if not h1_w1 and is_h1 and len(runners) == 3:
+            has1 = '1' in rn_orig; has2 = '2' in rn_orig
+            hasX = any(n in ('x', 'ничья', 'draw') for n in rn_low)
+            if has1 and has2 and hasX:
+                for r in runners:
+                    n = r.get('name', '').strip(); nl = n.lower(); p = r.get('price')
+                    if not p or p <= 1.0: continue
+                    if n == '1': h1_w1 = p
+                    elif n == '2': h1_w2 = p
+                    elif nl in ('x', 'ничья', 'draw'): h1_wx = p
+
+        # ── Totals (all lines) ────────────────────────────────
         if ('тотал' in mn or 'total' in mn) and len(runners) == 2:
-            if any(x in mn for x in ('сет', 'партия', 'гейм', 'сет')): continue
+            if any(x in mn for x in _skip_kw): continue
             ov = un = None
             for r in runners:
                 n, p = r.get('name', ''), r.get('price'); nl = n.lower()
@@ -1236,20 +1261,63 @@ def _odds_football(markets):
                 if ml:
                     line = float(ml.group())
                     bal = abs(ov[0] - 2.0) + abs(un[0] - 2.0)
-                    if bal < best_bal:
-                        best_bal = bal; tot_line = line; tot_over = ov[0]; tot_under = un[0]
+                    if is_h1:
+                        if h1_tot_line is None:
+                            h1_tot_over, h1_tot_under, h1_tot_line = ov[0], un[0], line
+                    else:
+                        all_totals[line] = (ov[0], un[0])
+                        if bal < best_bal:
+                            best_bal = bal; tot_line = line; tot_over = ov[0]; tot_under = un[0]
 
-        # Handicap
-        if ('фора' in mn or 'гандикап' in mn) and len(runners) == 2 and not hdp_h:
-            if any(x in mn for x in ('сет', 'партия')): continue
+        # ── Handicap (all lines) ──────────────────────────────
+        if ('фора' in mn or 'гандикап' in mn or 'handicap' in mn) and len(runners) == 2:
+            if any(x in mn for x in _skip_kw): continue
+            ch = ca = cl = None
             for r in runners:
                 n, p = r.get('name', '').strip(), r.get('price')
                 if not p or p <= 1.0: continue
                 hm = _re.search(r'([+-][\d.]+)', n)
                 lv = float(hm.group(1)) if hm else None
-                if n.startswith('1'): hdp_h, hdp_l = p, lv
-                elif n.startswith('2'): hdp_a = p
-    return w1, wx, w2, tot_over, tot_under, tot_line, hdp_h, hdp_a, hdp_l
+                if n.startswith('1'): ch, cl = p, lv
+                elif n.startswith('2'): ca = p
+            if ch and cl is not None and ca:
+                all_hdps[cl] = (ch, ca)
+                if not hdp_h:
+                    hdp_h, hdp_a, hdp_l = ch, ca, cl
+
+        # ── BTTS (обе забьют) ─────────────────────────────────
+        if not btts_yes and ('обе' in mn or 'btts' in mn or 'both' in mn or 'забьют' in mn):
+            for r in runners:
+                n, p = r.get('name', '').strip().lower(), r.get('price')
+                if not p: continue
+                if any(x in n for x in ('да', 'yes')): btts_yes = p
+                elif any(x in n for x in ('нет', 'no')): btts_no = p
+
+        # ── Double chance ─────────────────────────────────────
+        if not dc_1x and ('двойной' in mn or 'double' in mn or 'chance' in mn):
+            for r in runners:
+                n, p = r.get('name', '').strip(), r.get('price')
+                if not p: continue
+                nu = n.upper()
+                if nu in ('1X', 'Х1'): dc_1x = p
+                elif nu in ('X2', 'Х2'): dc_x2 = p
+                elif nu == '12': dc_12 = p
+
+    # Sort totals / hdps for display
+    sorted_tots = sorted(all_totals.items())   # [(line, (over, under)), ...]
+    sorted_hdps = sorted(all_hdps.items(), key=lambda x: abs(x[0]))
+
+    return {
+        'w1': w1, 'wx': wx, 'w2': w2,
+        'totOver': tot_over, 'totUnder': tot_under, 'totLine': tot_line,
+        'hdpH': hdp_h, 'hdpA': hdp_a, 'hdpL': hdp_l,
+        'bttsYes': btts_yes, 'bttsNo': btts_no,
+        'dc1x': dc_1x, 'dcX2': dc_x2, 'dc12': dc_12,
+        'h1w1': h1_w1, 'h1wx': h1_wx, 'h1w2': h1_w2,
+        'h1TotOver': h1_tot_over, 'h1TotUnder': h1_tot_under, 'h1TotLine': h1_tot_line,
+        'allTotals': [[l, v[0], v[1]] for l, v in sorted_tots],
+        'allHdps':   [[l, v[0], v[1]] for l, v in sorted_hdps],
+    }
 
 
 def _parse_phase(phase, sport):
@@ -1287,8 +1355,8 @@ def parse_football(base, detail=None, sport='football'):
         else:
             minute = int(mt) if mt else 0
     mkts = ev.get('markets', [])
-    w1, wx, w2, to, tu, tl, hh, ha, hl = _odds_football(mkts)
-    lbl = {'football': 'Футбол', 'hockey': 'Хоккей'}.get(sport, sport)
+    o    = _odds_football(mkts)
+    lbl  = {'football': 'Футбол', 'hockey': 'Хоккей'}.get(sport, sport)
     return {
         'id': str(ev.get('id', base.get('id', ''))), 'source': 'leon', 'sport': sport,
         'homeTeam': hn, 'awayTeam': an, 'tournament': lg or lbl,
@@ -1296,9 +1364,14 @@ def parse_football(base, detail=None, sport='football'):
         'homeSets': hs, 'awaySets': aws,
         'sets': [], 'currentSetNum': period, 'currentHomePts': 0, 'currentAwayPts': 0,
         'period': period, 'periodLabel': plabel, 'minute': minute,
-        'w1Odds': w1, 'wxOdds': wx, 'w2Odds': w2,
-        'totalOverOdds': to, 'totalUnderOdds': tu, 'totalLine': tl,
-        'hdpHomeOdds': hh, 'hdpAwayOdds': ha, 'hdpLine': hl,
+        'w1Odds': o['w1'], 'wxOdds': o['wx'], 'w2Odds': o['w2'],
+        'totalOverOdds': o['totOver'], 'totalUnderOdds': o['totUnder'], 'totalLine': o['totLine'],
+        'hdpHomeOdds': o['hdpH'], 'hdpAwayOdds': o['hdpA'], 'hdpLine': o['hdpL'],
+        'bttsYes': o['bttsYes'], 'bttsNo': o['bttsNo'],
+        'dc1x': o['dc1x'], 'dcX2': o['dcX2'], 'dc12': o['dc12'],
+        'h1w1': o['h1w1'], 'h1wx': o['h1wx'], 'h1w2': o['h1w2'],
+        'h1TotOver': o['h1TotOver'], 'h1TotUnder': o['h1TotUnder'], 'h1TotLine': o['h1TotLine'],
+        'allTotals': o['allTotals'], 'allHdps': o['allHdps'],
         'leonUrl': url, 'isLive': is_live, 'status': 'inprogress' if is_live else 'notstarted',
     }
 

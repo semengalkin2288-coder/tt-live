@@ -1592,6 +1592,105 @@ const App = (() => {
     </div>`;
   }
 
+  // ── All markets odds panel ────────────────────────────
+  function _oddsAllMarketsHtml(m) {
+    if (m.sport !== 'football' && m.sport !== 'hockey') return '';
+    const rows = [];
+    const fmtOdds = (o) => o ? o.toFixed(2) : '—';
+    const evBadge = (evPct) => {
+      if (evPct == null) return '';
+      const cls = evPct >= 7 ? 'oam-ev-h' : evPct >= 3.5 ? 'oam-ev-m' : evPct > 0 ? 'oam-ev-l' : 'oam-ev-n';
+      return `<span class="oam-ev ${cls}">${evPct > 0 ? '+' : ''}${evPct.toFixed(1)}%</span>`;
+    };
+    // Build EV map from predictions
+    const evMap = {};
+    for (const p of (m.predictions || [])) {
+      evMap[p.label] = { evPct: p.evPct, prob: p.prob, signal: p.signal };
+    }
+    const row = (label, oddsVal, modelProb) => {
+      const info = evMap[label] || null;
+      const evPct = info ? info.evPct : null;
+      const sigCls = info?.signal === 'high' ? 'oam-sig-h' : info?.signal === 'medium' ? 'oam-sig-m' : '';
+      return `<div class="oam-row ${sigCls}">
+        <span class="oam-label">${esc(label)}</span>
+        <span class="oam-odds">${fmtOdds(oddsVal)}</span>
+        ${modelProb != null ? `<span class="oam-prob">${(modelProb*100).toFixed(0)}%</span>` : '<span class="oam-prob">—</span>'}
+        ${evBadge(evPct)}
+      </div>`;
+    };
+    const group = (title, items) => {
+      const content = items.filter(Boolean).join('');
+      if (!content) return '';
+      return `<div class="oam-group"><div class="oam-group-title">${title}</div>${content}</div>`;
+    };
+
+    const hp = m.matchWinHomeProb / 100, dp = m.drawProb / 100, ap = m.matchWinAwayProb / 100;
+    rows.push(group('⚽ Исход матча', [
+      m.w1Odds ? row(m.homeTeam, m.w1Odds, hp) : null,
+      m.wxOdds ? row('Ничья', m.wxOdds, dp) : null,
+      m.w2Odds ? row(m.awayTeam, m.w2Odds, ap) : null,
+    ]));
+    if (m.dc1x || m.dcX2 || m.dc12) {
+      rows.push(group('🎯 Двойной шанс', [
+        m.dc1x ? row('1X', m.dc1x, hp + dp) : null,
+        m.dcX2 ? row('X2', m.dcX2, dp + ap) : null,
+        m.dc12 ? row('12', m.dc12, hp + ap) : null,
+      ]));
+    }
+    if (m.bttsYes || m.bttsNo) {
+      rows.push(group('🥅 Обе забьют', [
+        m.bttsYes ? row('Да', m.bttsYes, null) : null,
+        m.bttsNo  ? row('Нет', m.bttsNo, null) : null,
+      ]));
+    }
+    // All totals
+    const totRows = (m.allTotals || []).map(([line, ov, un]) =>
+      `${row('Больше ' + line, ov, null)}${row('Меньше ' + line, un, null)}`
+    ).join('');
+    if (totRows) rows.push(`<div class="oam-group"><div class="oam-group-title">📊 Тоталы голов</div>${totRows}</div>`);
+
+    // All handicaps
+    const hdpRows = (m.allHdps || []).map(([line, ho, ao]) => {
+      const al = -line;
+      return `${row(m.homeTeam + ' (' + (line > 0 ? '+' : '') + line + ')', ho, null)}${row(m.awayTeam + ' (' + (al > 0 ? '+' : '') + al + ')', ao, null)}`;
+    }).join('');
+    if (hdpRows) rows.push(`<div class="oam-group"><div class="oam-group-title">⚖️ Форы</div>${hdpRows}</div>`);
+
+    // First half
+    if (m.h1w1 || m.h1TotOver) {
+      rows.push(group('⏱ 1-й тайм', [
+        m.h1w1 ? row(m.homeTeam + ' (1Т)', m.h1w1, null) : null,
+        m.h1wx ? row('Ничья (1Т)', m.h1wx, null) : null,
+        m.h1w2 ? row(m.awayTeam + ' (1Т)', m.h1w2, null) : null,
+        m.h1TotOver ? row('Больше ' + m.h1TotLine + ' (1Т)', m.h1TotOver, null) : null,
+        m.h1TotUnder ? row('Меньше ' + m.h1TotLine + ' (1Т)', m.h1TotUnder, null) : null,
+      ]));
+    }
+
+    if (!rows.join('')) return '<div class="oam-empty">Котировки загружаются...</div>';
+    return `<div class="oam-wrap">
+      <div class="oam-header">
+        <span>Рынок</span><span>Кф</span><span>Мод.%</span><span>EV</span>
+      </div>
+      ${rows.join('')}
+      <div class="oam-note">EV — преимущество модели над букмекером. 🟢 = HIGH, 🟡 = VALUE</div>
+    </div>`;
+  }
+
+  let _oddsOpen = {};
+  function toggleOddsPanel(matchId) {
+    const panel = document.getElementById('oam-' + matchId);
+    if (!panel) return;
+    _oddsOpen[matchId] = !_oddsOpen[matchId];
+    if (_oddsOpen[matchId]) {
+      const m = analyzed.find(x => x.id === matchId);
+      if (m) panel.innerHTML = _oddsAllMarketsHtml(m);
+      panel.style.display = 'block';
+    } else {
+      panel.style.display = 'none';
+    }
+  }
+
   // ── Full analysis panel (opened by button) ───────────
   function _fullAnalysisHtml(m) {
     const sport = m.sport || 'tt';
@@ -1774,17 +1873,21 @@ const App = (() => {
         ${vel.run !== 0 ? `<span class="vel-run ${vel.run>0?'run-home':'run-away'}">🔥 серия ${esc(trunc(vel.run>0?m.homeTeam:m.awayTeam,8))}</span>` : ''}
       </div>` : '';
 
-    // Score distrib
+    // Score distrib (keys use dash separator: "2-1")
     const distribHtml = (() => {
       if (!m.scoreDistrib || !m.isLive) return '';
       const sorted = Object.entries(m.scoreDistrib).sort((a,b) => b[1]-a[1]);
       const topP   = sorted[0]?.[1] || 1;
-      return `<div class="score-distrib"><div class="sd-header">Прогноз счёта:</div>
-        ${sorted.slice(0,4).map(([k,v],i) => {
-          const isHome = parseInt(k[0]) > parseInt(k[2]);
+      return `<div class="score-distrib"><div class="sd-header">⚽ Прогноз итогового счёта:</div>
+        ${sorted.slice(0,5).map(([k,v],i) => {
+          const parts = k.split('-');
+          const hg = parseInt(parts[0] || 0), ag = parseInt(parts[1] || 0);
+          const disp = hg + ':' + ag;
+          const isHome = hg > ag, isDraw = hg === ag;
+          const cls = isHome ? 'sd-home' : isDraw ? 'sd-draw' : 'sd-away';
           return `<div class="sd-row ${i===0?'sd-bar-top':''}">
-            <span class="sd-score ${isHome?'sd-home':'sd-away'}">${k}</span>
-            <div class="sd-bar-track"><div class="sd-bar-fill ${isHome?'sd-home':'sd-away'}" style="width:${Math.round(v/topP*100)}%"></div></div>
+            <span class="sd-score ${cls}">${disp}</span>
+            <div class="sd-bar-track"><div class="sd-bar-fill ${cls}" style="width:${Math.round(v/topP*100)}%"></div></div>
             <span class="sd-pct">${(v*100).toFixed(0)}%</span>
           </div>`;
         }).join('')}
@@ -1955,14 +2058,12 @@ const App = (() => {
             <span class="sb-name ${awayWin ? 'winning' : ''}">${esc(m.awayTeam)}</span>
           </div>
         </div>
-        ${isGoalSport && m.isLive && m.w1Odds ? `
-        <div class="fb-odds-mini">
-          <span class="fb-odds-chip">${esc(trunc(m.homeTeam,9))} <b>${m.w1Odds?.toFixed(2)||'?'}</b></span>
-          ${m.wxOdds ? `<span class="fb-odds-chip">X <b>${m.wxOdds?.toFixed(2)}</b></span>` : ''}
-          <span class="fb-odds-chip">${esc(trunc(m.awayTeam,9))} <b>${m.w2Odds?.toFixed(2)||'?'}</b></span>
-          ${m.bestSignal==='high'||m.bestSignal==='medium' ? `<span class="fb-ev-chip ${m.bestSignal==='high'?'ev-h':'ev-m'}">EV ${m.topEV>0?'+':''}${(m.topEV||0).toFixed(1)}%</span>` : ''}
-        </div>` : ''}
-        <button class="btn-get-pred" onclick="App.getCardPrediction('${m.id}')">📊 Получить прогноз</button>
+        ${_miniOddsHtml(m)}
+        <div class="card-btn-row">
+          <button class="btn-get-pred" onclick="App.getCardPrediction('${m.id}')">📊 Прогноз</button>
+          ${isGoalSport ? `<button class="btn-odds-all" onclick="App.toggleOddsPanel('${m.id}')">📋 Коэффициенты</button>` : ''}
+        </div>
+        <div id="oam-${m.id}" style="display:none"></div>
         <div id="cpred-${m.id}" style="display:none"></div>
       </div>
     </div>`;
@@ -1987,6 +2088,25 @@ const App = (() => {
       </div>
       <span class="pred-ev ${evCls}">${evSign}${p.evPct.toFixed(1)}%</span>
     </div>`;
+  }
+
+  // ── Mini odds strip on card ───────────────────────────
+  function _miniOddsHtml(m) {
+    const isGoalSport = m.sport === 'football' || m.sport === 'hockey';
+    if (!isGoalSport || !m.isLive || !m.w1Odds) return '';
+    const w1 = m.w1Odds ? m.w1Odds.toFixed(2) : '?';
+    const w2 = m.w2Odds ? m.w2Odds.toFixed(2) : '?';
+    const xChip = m.wxOdds ? '<span class="fb-odds-chip">X <b>' + m.wxOdds.toFixed(2) + '</b></span>' : '';
+    const evClass = m.bestSignal === 'high' ? 'ev-h' : 'ev-m';
+    const evChip = (m.bestSignal === 'high' || m.bestSignal === 'medium')
+      ? '<span class="fb-ev-chip ' + evClass + '">EV ' + (m.topEV > 0 ? '+' : '') + (m.topEV || 0).toFixed(1) + '%</span>'
+      : '';
+    return '<div class="fb-odds-mini">'
+      + '<span class="fb-odds-chip">' + esc(trunc(m.homeTeam,9)) + ' <b>' + w1 + '</b></span>'
+      + xChip
+      + '<span class="fb-odds-chip">' + esc(trunc(m.awayTeam,9)) + ' <b>' + w2 + '</b></span>'
+      + evChip
+      + '</div>';
   }
 
   // ── Countdown ─────────────────────────────────────────
@@ -2037,5 +2157,5 @@ const App = (() => {
            openHistory, closeHistory, exportHistoryCsv: _exportHistoryCsv,
            toggleSession,
            openExpress, closeExpress, setExpressLegs,
-           loadAISummary, getCardPrediction };
+           loadAISummary, getCardPrediction, toggleOddsPanel };
 })();

@@ -239,29 +239,105 @@ const SportsEngine = (() => {
       addPred('draw', 'Ничья', 'Ничья', model.px, mktPx, wxOdds, evX, null);
     }
 
-    // Total goals — key value: model uses consistent λ while bookie prices it separately
-    if (totalLine !== null && totalLine !== undefined && totalOverOdds && totalUnderOdds) {
-      const mktTot = noVigTotal(totalOverOdds, totalUnderOdds);
-      const evO = ev(model.over, totalOverOdds);
-      const evU = ev(model.under, totalUnderOdds);
-      addPred('total', `Тотал (${totalLine})`, `Больше ${totalLine}`,
-        model.over, mktTot.over, totalOverOdds, evO, null);
-      addPred('total', `Тотал (${totalLine})`, `Меньше ${totalLine}`,
-        model.under, mktTot.under, totalUnderOdds, evU, null);
+    // ── Helper: compute over/under prob for any total line ────
+    function totalProb(line) {
+      let ov = 0;
+      for (let ri = 0; ri <= 9; ri++) {
+        for (let rj = 0; rj <= 9; rj++) {
+          if (homeScore + ri + awayScore + rj > line) ov += pPMF(ri, lh) * pPMF(rj, la);
+        }
+      }
+      return { over: Math.min(0.99, ov), under: Math.max(0.01, 1 - ov) };
     }
 
-    // Handicap — model uses consistent λ vs bookie's separate handicap pricing
-    if (hdpLine !== null && hdpLine !== undefined && hdpHomeOdds && hdpAwayOdds) {
-      const mktHdp = noVigTotal(hdpHomeOdds, hdpAwayOdds);
-      const evHH = ev(model.hdpH, hdpHomeOdds);
-      const evHA = ev(model.hdpA, hdpAwayOdds);
-      const awayLine = -hdpLine;
-      addPred('handicap', `Гандикап (${hdpLine > 0 ? '+' : ''}${hdpLine})`,
-        `${homeTeam} (${hdpLine > 0 ? '+' : ''}${hdpLine})`,
-        model.hdpH, mktHdp.over, hdpHomeOdds, evHH, true);
-      addPred('handicap', `Гандикап (${awayLine > 0 ? '+' : ''}${awayLine})`,
-        `${awayTeam} (${awayLine > 0 ? '+' : ''}${awayLine})`,
-        model.hdpA, mktHdp.under, hdpAwayOdds, evHA, false);
+    // ── Helper: compute hdp prob for any handicap line ────────
+    function hdpProb(line) {
+      let hProb = 0;
+      for (let ri = 0; ri <= 9; ri++) {
+        for (let rj = 0; rj <= 9; rj++) {
+          if ((homeScore + ri - awayScore - rj) + line > 0) hProb += pPMF(ri, lh) * pPMF(rj, la);
+        }
+      }
+      return { home: Math.min(0.99, hProb), away: Math.max(0.01, 1 - hProb) };
+    }
+
+    // Main total (primary line from _odds_football)
+    if (totalLine != null && totalOverOdds && totalUnderOdds) {
+      const tp  = totalProb(totalLine);
+      const mkt = noVigTotal(totalOverOdds, totalUnderOdds);
+      addPred('total', `Тотал (${totalLine})`, `Больше ${totalLine}`, tp.over, mkt.over, totalOverOdds, ev(tp.over, totalOverOdds), null);
+      addPred('total', `Тотал (${totalLine})`, `Меньше ${totalLine}`, tp.under, mkt.under, totalUnderOdds, ev(tp.under, totalUnderOdds), null);
+    }
+
+    // All other total lines
+    for (const [line, overOdds, underOdds] of (event.allTotals || [])) {
+      if (line === totalLine) continue;
+      const tp  = totalProb(line);
+      const mkt = noVigTotal(overOdds, underOdds);
+      addPred('total', `Тотал (${line})`, `Больше ${line}`, tp.over, mkt.over, overOdds, ev(tp.over, overOdds), null);
+      addPred('total', `Тотал (${line})`, `Меньше ${line}`, tp.under, mkt.under, underOdds, ev(tp.under, underOdds), null);
+    }
+
+    // Main handicap
+    if (hdpLine != null && hdpHomeOdds && hdpAwayOdds) {
+      const hp  = hdpProb(hdpLine);
+      const mkt = noVigTotal(hdpHomeOdds, hdpAwayOdds);
+      const al  = -hdpLine;
+      addPred('handicap', `Фора (${hdpLine > 0 ? '+' : ''}${hdpLine})`, `${homeTeam} (${hdpLine > 0 ? '+' : ''}${hdpLine})`, hp.home, mkt.over, hdpHomeOdds, ev(hp.home, hdpHomeOdds), true);
+      addPred('handicap', `Фора (${al > 0 ? '+' : ''}${al})`, `${awayTeam} (${al > 0 ? '+' : ''}${al})`, hp.away, mkt.under, hdpAwayOdds, ev(hp.away, hdpAwayOdds), false);
+    }
+
+    // All other handicap lines
+    for (const [line, homeOdds, awayOdds] of (event.allHdps || [])) {
+      if (line === hdpLine) continue;
+      const hp  = hdpProb(line);
+      const mkt = noVigTotal(homeOdds, awayOdds);
+      const al  = -line;
+      addPred('handicap', `Фора (${line > 0 ? '+' : ''}${line})`, `${homeTeam} (${line > 0 ? '+' : ''}${line})`, hp.home, mkt.over, homeOdds, ev(hp.home, homeOdds), true);
+      addPred('handicap', `Фора (${al > 0 ? '+' : ''}${al})`, `${awayTeam} (${al > 0 ? '+' : ''}${al})`, hp.away, mkt.under, awayOdds, ev(hp.away, awayOdds), false);
+    }
+
+    // BTTS (обе забьют) — P = (1 - e^-lh) * (1 - e^-la)
+    if (isFootball && event.bttsYes && event.bttsNo) {
+      const pY = (1 - Math.exp(-lh)) * (1 - Math.exp(-la));
+      const pN = 1 - pY;
+      const mkt = noVigTotal(event.bttsYes, event.bttsNo);
+      addPred('btts', 'Обе забьют', 'Да', pY, mkt.over, event.bttsYes, ev(pY, event.bttsYes), null);
+      addPred('btts', 'Обе забьют', 'Нет', pN, mkt.under, event.bttsNo, ev(pN, event.bttsNo), null);
+    }
+
+    // Double chance
+    if (isFootball && event.dc1x) {
+      const p1x = model.p1 + model.px;
+      const pX2 = model.px + model.p2;
+      const p12 = model.p1 + model.p2;
+      const tot = (event.dc1x ? 1/event.dc1x : 0) + (event.dcX2 ? 1/event.dcX2 : 0) + (event.dc12 ? 1/event.dc12 : 0) || 1;
+      if (event.dc1x)  addPred('dc', 'Двойной шанс', '1X', p1x, (1/event.dc1x)/tot, event.dc1x, ev(p1x, event.dc1x), true);
+      if (event.dcX2)  addPred('dc', 'Двойной шанс', 'X2', pX2, (1/event.dcX2)/tot, event.dcX2, ev(pX2, event.dcX2), false);
+      if (event.dc12)  addPred('dc', 'Двойной шанс', '12', p12, (1/event.dc12)/tot, event.dc12, ev(p12, event.dc12), null);
+    }
+
+    // First half (λ/2 approximation for remaining time — adjust for period)
+    if (isFootball && (event.h1w1 || event.h1TotOver)) {
+      const periodFrac = period === 1 ? 0.48 : 0.0; // 1H goals = ~48% total
+      const lh1 = lh * periodFrac, la1 = la * periodFrac;
+      if (lh1 > 0 && la1 > 0) {
+        if (event.h1w1 && event.h1w2) {
+          const [h1p1, h1px, h1p2] = poissonMatchProbs(lh1, la1);
+          const mktH1 = event.h1wx ? noVig3(event.h1w1, event.h1wx, event.h1w2) : noVig2(event.h1w1, event.h1w2);
+          addPred('h1', '1-й тайм', homeTeam, h1p1, mktH1.home, event.h1w1, ev(h1p1, event.h1w1), true);
+          addPred('h1', '1-й тайм', awayTeam, h1p2, mktH1.away, event.h1w2, ev(h1p2, event.h1w2), false);
+          if (event.h1wx) addPred('h1', '1-й тайм', 'Ничья', h1px, mktH1.draw, event.h1wx, ev(h1px, event.h1wx), null);
+        }
+        if (event.h1TotOver && event.h1TotUnder && event.h1TotLine != null) {
+          let h1Ov = 0;
+          for (let i = 0; i <= 7; i++) for (let j = 0; j <= 7; j++)
+            if (i + j > event.h1TotLine) h1Ov += pPMF(i, lh1) * pPMF(j, la1);
+          const mktH1T = noVigTotal(event.h1TotOver, event.h1TotUnder);
+          addPred('h1tot', `Тотал 1-го тайма (${event.h1TotLine})`, `Больше ${event.h1TotLine}`, h1Ov, mktH1T.over, event.h1TotOver, ev(h1Ov, event.h1TotOver), null);
+          addPred('h1tot', `Тотал 1-го тайма (${event.h1TotLine})`, `Меньше ${event.h1TotLine}`, 1 - h1Ov, mktH1T.under, event.h1TotUnder, ev(1 - h1Ov, event.h1TotUnder), null);
+        }
+      }
     }
 
     preds.sort((a, b) => b.evPct - a.evPct);
@@ -309,13 +385,16 @@ const SportsEngine = (() => {
     else if (bestSig === 'high' || (bestSig === 'medium' && topEV >= 5)) hotMoment = 'ХОРОШИЙ';
     else if (bestSig === 'none') hotMoment = 'ХОЛОДНЫЙ';
 
-    // Score distribution for top 4 likely scorelines
+    // Score distribution — remaining goals added to current score
     const scoreDistrib = {};
     if (isFootball) {
-      for (let i = 0; i <= 5; i++) {
-        for (let j = 0; j <= 5; j++) {
+      for (let i = 0; i <= 6; i++) {
+        for (let j = 0; j <= 6; j++) {
           const p = pPMF(i, lh) * pPMF(j, la);
-          if (p >= 0.01) scoreDistrib[`${homeScore+i}:${awayScore+j}`] = +p.toFixed(3);
+          if (p >= 0.008) {
+            const key = `${homeScore + i}-${awayScore + j}`; // use dash to avoid split issues
+            scoreDistrib[key] = +p.toFixed(3);
+          }
         }
       }
     }
