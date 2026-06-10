@@ -81,24 +81,8 @@ TT_QUERIES = [
     'TT+League', 'TT+Series', 'TT+Tour', 'Virtual+TT',
 ]
 
-FOOTBALL_QUERIES = [
-    # Broad search — catches all real football on Leon
-    'Футбол',
-    # Top international competitions
-    'Champions+League', 'Europa+League', 'Conference+League',
-    'World+Cup', 'Euro', 'Copa+America', 'Nations+League',
-    'Club+World+Cup',
-    # Top domestic leagues
-    'Premier+League', 'La+Liga', 'Bundesliga', 'Serie+A', 'Ligue+1',
-    'Eredivisie', 'Primeira+Liga', 'Super+Lig', 'Belgian',
-    'Ekstraklasa', 'Scottish+Premiership',
-    # CIS / Russia
-    'РПЛ', 'ФНЛ', 'Кубок+России',
-    # Americas
-    'MLS', 'Liga+MX', 'Brasileirao', 'Copa+Libertadores', 'Copa+Sudamericana',
-    # Africa / Asia
-    'African', 'Asian', 'CAF', 'AFC',
-]
+# One broad query catches all football on Leon; virtual is filtered out by keyword below
+FOOTBALL_QUERIES = ['Футбол', 'Football', 'Soccer']
 
 SPORT_QUERIES = {
     'tt':       TT_QUERIES,
@@ -107,9 +91,11 @@ SPORT_QUERIES = {
     'tennis':   ['Теннис', 'ATP', 'WTA', 'ITF', 'Roland+Garros', 'Wimbledon'],
 }
 
-_HOCKEY_KW = ['хоккей', 'hockey', 'кхл', 'nhl', 'shl', 'liiga', 'del ', 'ahl', 'нхл']
-_BIGTEN_KW = ['atp', 'wta', 'itf', 'roland garros', 'wimbledon', 'us open',
-              'australian open', 'challenger', 'davis cup', 'fed cup']
+_HOCKEY_KW  = ['хоккей', 'hockey', 'кхл', 'nhl', 'shl', 'liiga', 'del ', 'ahl', 'нхл']
+_BIGTEN_KW  = ['atp', 'wta', 'itf', 'roland garros', 'wimbledon', 'us open',
+               'australian open', 'challenger', 'davis cup', 'fed cup']
+_VIRTUAL_KW = ['виртуальн', 'virtual', 'кибер', 'cyber', 'robot', 'liga pro',
+               'setka cup', 'inplay tt', 'настольный', 'table tennis', 'ping pong']
 
 
 def get_json(url, timeout=12):
@@ -1051,7 +1037,7 @@ def fetch_sport_event_list(sport):
                     ln = _league_name(e)
                     is_other = any(kw in ln for kw in _HOCKEY_KW) or \
                                any(kw in ln for kw in _BIGTEN_KW) or \
-                               ('настольный' in ln) or ('table tennis' in ln)
+                               any(kw in ln for kw in _VIRTUAL_KW)
                     if not is_other:
                         all_events[eid] = e
         except Exception as ex:
