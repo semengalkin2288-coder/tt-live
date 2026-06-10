@@ -511,8 +511,11 @@ const App = (() => {
       updateScoreTracker(data.events);
     }
     analyzed = (data.events || []).map(e => {
-      if (e.sport === 'football' || e.sport === 'hockey' || e.sport === 'tennis')
+      if (e.sport === 'football' || e.sport === 'hockey' || e.sport === 'tennis') {
+        // Use inline stats from server if available (avoids separate round-trip)
+        if (e.fbStats && !_footballStatsCache[e.id]) _footballStatsCache[e.id] = e.fbStats;
         return SportsEngine.analyze(e, bankroll, _footballStatsCache[e.id] || null);
+      }
       return Engine.analyze(e, bankroll, _historyCache[e.id] || null, getOddsMovement(e.id), getScoreData(e.id));
     }).filter(Boolean);
     if (currentSport === 'tt') {
@@ -1450,8 +1453,10 @@ const App = (() => {
     const bankroll = getBankroll();
 
     let list = analyzed.map(m => {
-      if (m.sport === 'football' || m.sport === 'hockey' || m.sport === 'tennis')
-        return SportsEngine.analyze(m, bankroll, _footballStatsCache[m.id] || null);
+      if (m.sport === 'football' || m.sport === 'hockey' || m.sport === 'tennis') {
+        const stats = _footballStatsCache[m.id] || m.fbStats || null;
+        return SportsEngine.analyze(m, bankroll, stats);
+      }
       return Engine.analyze(m, bankroll, _historyCache[m.id] || null, getOddsMovement(m.id), getScoreData(m.id));
     }).filter(Boolean);
 

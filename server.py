@@ -1362,6 +1362,16 @@ def parse_football(base, detail=None, sport='football'):
     mkts = ev.get('markets', [])
     o    = _odds_football(mkts)
     lbl  = {'football': 'Футбол', 'hockey': 'Хоккей'}.get(sport, sport)
+    # Embed cached team stats inline so client renders H2H immediately
+    fb_stats_inline = None
+    try:
+        fkey = (hn.lower().strip(), an.lower().strip())
+        with _FOOTBALL_TEAM_LOCK:
+            fc = _FOOTBALL_TEAM_CACHE.get(fkey)
+            if fc:
+                fb_stats_inline = fc['data']
+    except Exception:
+        pass
     return {
         'id': str(ev.get('id', base.get('id', ''))), 'source': 'leon', 'sport': sport,
         'homeTeam': hn, 'awayTeam': an, 'tournament': lg or lbl,
@@ -1378,6 +1388,7 @@ def parse_football(base, detail=None, sport='football'):
         'h1TotOver': o['h1TotOver'], 'h1TotUnder': o['h1TotUnder'], 'h1TotLine': o['h1TotLine'],
         'allTotals': o['allTotals'], 'allHdps': o['allHdps'],
         'leonUrl': url, 'isLive': is_live, 'status': 'inprogress' if is_live else 'notstarted',
+        'fbStats': fb_stats_inline,
     }
 
 

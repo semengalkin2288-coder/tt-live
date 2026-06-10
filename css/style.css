@@ -418,6 +418,7 @@ header {
 .pred-icon { font-size: 0.9rem; flex-shrink: 0; }
 .pred-body { flex: 1; min-width: 0; }
 .pred-market { font-size: 0.68rem; color: var(--text2); text-transform: uppercase; letter-spacing: 0.05em; }
+.comeback-note { font-size: 0.65rem; background: #7c3aed22; color: #a78bfa; border: 1px solid #7c3aed55; border-radius: 4px; padding: 1px 5px; margin-left: 4px; text-transform: none; letter-spacing: 0; }
 .pred-label  { font-size: 0.85rem; font-weight: 700; color: var(--text); margin: 0.05rem 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pred-meta   { font-size: 0.7rem; color: var(--text2); }
 .pred-ev { font-size: 0.85rem; font-weight: 800; white-space: nowrap; flex-shrink: 0; }
