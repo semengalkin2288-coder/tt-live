@@ -1607,8 +1607,8 @@ const App = (() => {
 
     const sources = [];
 
-    // ── Источник 1: текущий счёт в партии (всегда доступен для лайва) ──
-    if (m.isLive && m.currentPts > 0) {
+    // ── Источник 1: текущий счёт в партии (только TT/Теннис) ──
+    if (!isFootball && m.isLive && m.currentPts > 0) {
       const lead = m.currentHomePts - m.currentAwayPts;
       const maxP = Math.max(m.currentHomePts, m.currentAwayPts);
       if (Math.abs(lead) >= 5 || (maxP >= 8 && Math.abs(lead) >= 3)) {
@@ -1618,12 +1618,15 @@ const App = (() => {
       }
     }
 
-    // ── Источник 2: счёт по сетам (явный лидер) ──
+    // ── Источник 2: счёт (для футбола — голы, для TT — сеты) ──
     if (m.isLive) {
       const sLead = (m.homeSets || 0) - (m.awaySets || 0);
       if (Math.abs(sLead) >= 1) {
         const sLeader = sLead > 0 ? m.homeTeam : m.awayTeam;
-        sources.push({ ok: (sLead > 0) === favHome, txt: `Счёт сетов: ${trunc(sLeader,12)} ведёт ${m.homeSets}:${m.awaySets}` });
+        const scoreLabel = isFootball
+          ? `Счёт ${m.periodLabel || ''}: ${trunc(sLeader,12)} ведёт ${m.homeScore}:${m.awayScore}`
+          : `Счёт сетов: ${trunc(sLeader,12)} ведёт ${m.homeSets}:${m.awaySets}`;
+        sources.push({ ok: (sLead > 0) === favHome, txt: scoreLabel });
       }
     }
 
@@ -1952,6 +1955,13 @@ const App = (() => {
             <span class="sb-name ${awayWin ? 'winning' : ''}">${esc(m.awayTeam)}</span>
           </div>
         </div>
+        ${isGoalSport && m.isLive && m.w1Odds ? `
+        <div class="fb-odds-mini">
+          <span class="fb-odds-chip">${esc(trunc(m.homeTeam,9))} <b>${m.w1Odds?.toFixed(2)||'?'}</b></span>
+          ${m.wxOdds ? `<span class="fb-odds-chip">X <b>${m.wxOdds?.toFixed(2)}</b></span>` : ''}
+          <span class="fb-odds-chip">${esc(trunc(m.awayTeam,9))} <b>${m.w2Odds?.toFixed(2)||'?'}</b></span>
+          ${m.bestSignal==='high'||m.bestSignal==='medium' ? `<span class="fb-ev-chip ${m.bestSignal==='high'?'ev-h':'ev-m'}">EV ${m.topEV>0?'+':''}${(m.topEV||0).toFixed(1)}%</span>` : ''}
+        </div>` : ''}
         <button class="btn-get-pred" onclick="App.getCardPrediction('${m.id}')">📊 Получить прогноз</button>
         <div id="cpred-${m.id}" style="display:none"></div>
       </div>

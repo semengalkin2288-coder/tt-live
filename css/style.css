@@ -1545,3 +1545,21 @@ header {
 }
 .full-analysis .btn-leon,
 .full-analysis .btn-detail { flex: 1; text-align: center; }
+
+/* ── Football card mini-odds strip ── */
+.fb-odds-mini {
+  display: flex; gap: 5px; align-items: center; flex-wrap: wrap;
+  padding: 5px 10px 0;
+}
+.fb-odds-chip {
+  font-size: 0.72rem; background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 4px; padding: 2px 6px; color: var(--text2);
+  white-space: nowrap;
+}
+.fb-odds-chip b { color: var(--text1); }
+.fb-ev-chip {
+  font-size: 0.72rem; font-weight: 700; border-radius: 4px; padding: 2px 7px;
+  margin-left: 4px;
+}
+.fb-ev-chip.ev-h { background: #0e2e1a; color: #4ade80; border: 1px solid #22c55e; }
+.fb-ev-chip.ev-m { background: #2e2000; color: #fcd34d; border: 1px solid #f59e0b; }
